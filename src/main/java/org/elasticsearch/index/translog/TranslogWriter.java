@@ -174,10 +174,6 @@ public class TranslogWriter extends TranslogReader {
         return writtenOffset;
     }
 
-    @Override
-    public ChannelSnapshot newChannelSnapshot() {
-        return new ChannelSnapshot(immutableReader());
-    }
 
     /**
      * Flushes the buffer if the translog is buffered.
@@ -255,11 +251,6 @@ public class TranslogWriter extends TranslogReader {
         @Override
         protected void readBytes(ByteBuffer buffer, long position) throws IOException {
             TranslogWriter.this.readBytes(buffer, position);
-        }
-
-        @Override
-        public ChannelSnapshot newChannelSnapshot() {
-            return TranslogWriter.this.newChannelSnapshot();
         }
     }
 

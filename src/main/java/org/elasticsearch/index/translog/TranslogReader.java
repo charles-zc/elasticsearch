@@ -26,10 +26,8 @@ import org.apache.lucene.index.IndexFormatTooOldException;
 import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.lucene.store.InputStreamDataInput;
 import org.elasticsearch.ElasticsearchException;
-import org.elasticsearch.common.bytes.BytesArray;
 import org.elasticsearch.common.io.stream.ByteBufferStreamInput;
 import org.elasticsearch.common.io.stream.InputStreamStreamInput;
-import org.elasticsearch.common.io.stream.StreamInput;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -45,10 +43,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public abstract class TranslogReader implements Closeable, Comparable<TranslogReader> {
     public static final int UNKNOWN_OP_COUNT = -1;
-
     private static final byte LUCENE_CODEC_HEADER_BYTE = 0x3f;
     private static final byte UNVERSIONED_TRANSLOG_HEADER_BYTE = 0x00;
-    private static final long HEADER_LENGTH = CodecUtil.headerLength(TranslogWriter.TRANSLOG_CODEC);
+    private static final int HEADER_LENGTH = CodecUtil.headerLength(TranslogWriter.TRANSLOG_CODEC);
 
     protected final long id;
     protected final ChannelReference channelReference;
@@ -68,7 +65,7 @@ public abstract class TranslogReader implements Closeable, Comparable<TranslogRe
     public abstract long sizeInBytes();
 
     /** the position the first operation is written at */
-    public long firstPosition() {
+    int headerLength() {
         return HEADER_LENGTH;
     }
 
@@ -77,11 +74,13 @@ public abstract class TranslogReader implements Closeable, Comparable<TranslogRe
     public Translog.Operation read(Translog.Location location) throws IOException {
         assert location.translogId == id : "read location's translog id [" + location.translogId + "] is not [" + id + "]";
         ByteBuffer buffer = ByteBuffer.allocate(location.size);
-        return read(buffer, location.translogLocation, location.size);
+        try (BufferedChecksumStreamInput checksumStreamInput = checksummedStream(buffer, location.translogLocation, location.size, null)) {
+            return read(checksumStreamInput);
+        }
     }
 
     /** read the size of the op (i.e., number of bytes, including the op size) written at the given position */
-    public final int readSize(ByteBuffer reusableBuffer, long position) {
+    private final int readSize(ByteBuffer reusableBuffer, long position) {
         // read op size from disk
         assert reusableBuffer.capacity() >= 4 : "reusable buffer must have capacity >=4 when reading opSize. got [" + reusableBuffer.capacity() + "]";
         try {
@@ -102,11 +101,53 @@ public abstract class TranslogReader implements Closeable, Comparable<TranslogRe
         }
     }
 
+    public Translog.Snapshot newSnapshot() {
+        final ByteBuffer reusableBuffer = ByteBuffer.allocate(1024);
+        final int totalOperations = totalOperations();
+        channelReference.incRef();
+        return new Translog.Snapshot() {
+            private final AtomicBoolean closed = new AtomicBoolean(false);
+            long position = headerLength();
+            int readOperations = 0;
+            private BufferedChecksumStreamInput reuse = null;
+
+            @Override
+            public int estimatedTotalOperations() {
+                return totalOperations;
+            }
+
+            @Override
+            public Translog.Operation next() throws IOException {
+                if (totalOperations != -1) {
+                    if (readOperations == totalOperations) {
+                        return null;
+                    }
+                    assert readOperations < totalOperations : "readOpeartions must be less than totalOperations";
+                } else if (position >= sizeInBytes()) { // this is the legacy case.... TODO move this in a dedicated iter?
+                    return null;
+                }
+                final int opSize = readSize(reusableBuffer, position);
+                reuse = checksummedStream(reusableBuffer, position, opSize, reuse);
+                Translog.Operation op = read(reuse);
+                position += opSize;
+                readOperations++;
+                return op;
+            }
+
+            @Override
+            public void close() {
+                if (closed.compareAndSet(false, true)) {
+                    channelReference.decRef();
+                }
+            }
+        };
+    }
+
     /**
      * reads an operation at the given position and returns it. The buffer length is equal to the number
      * of bytes reads.
      */
-    public final Translog.Operation read(ByteBuffer reusableBuffer, long position, int opSize) throws IOException {
+    private final BufferedChecksumStreamInput checksummedStream(ByteBuffer reusableBuffer, long position, int opSize, BufferedChecksumStreamInput reuse) throws IOException {
         final ByteBuffer buffer;
         if (reusableBuffer.capacity() >= opSize) {
             buffer = reusableBuffer;
@@ -117,22 +158,17 @@ public abstract class TranslogReader implements Closeable, Comparable<TranslogRe
         buffer.limit(opSize);
         readBytes(buffer, position);
         buffer.flip();
-        return read(new ByteBufferStreamInput(buffer));
+        return new BufferedChecksumStreamInput(new ByteBufferStreamInput(buffer), reuse);
     }
 
-
-
-    public Translog.Operation read(StreamInput inStream) throws IOException {
-        return Translog.readOperation(new BufferedChecksumStreamInput(inStream)); //nocommit - a new BufferedChecksumStreamInput for each op might be expensive?
+    protected Translog.Operation read(BufferedChecksumStreamInput inStream) throws IOException {
+        return Translog.readOperation(inStream);
     }
 
     /**
      * reads bytes at position into the given buffer, filling it.
      */
     abstract protected void readBytes(ByteBuffer buffer, long position) throws IOException;
-
-    /** create snapshot for this channel */
-    abstract ChannelSnapshot newChannelSnapshot();
 
     @Override
     public void close() throws IOException {

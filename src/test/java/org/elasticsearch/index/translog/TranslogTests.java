@@ -332,7 +332,7 @@ public class TranslogTests extends ElasticsearchTestCase {
             Translog.Snapshot snapshot = translog.newSnapshot();
             fail("translog is closed");
         } catch (AlreadyClosedException ex) {
-            assertThat(ex.getMessage(), containsString("translog [1] is already closed"));
+            assertThat(ex.getMessage(), containsString("translog-1.tlog is already closed can't increment"));
         }
     }
 
@@ -889,7 +889,7 @@ public class TranslogTests extends ElasticsearchTestCase {
         final TranslogReader reader = randomBoolean() ? writer : translog.openReader(writer.path(), Checkpoint.read(translog.location().resolve(Translog.CHECKPOINT_FILE_NAME)));
         for (int i = 0; i < numOps; i++) {
             ByteBuffer buffer = ByteBuffer.allocate(4);
-            reader.readBytes(buffer, reader.firstPosition() + 4*i);
+            reader.readBytes(buffer, reader.headerLength() + 4*i);
             buffer.flip();
             final int value = buffer.getInt();
             assertEquals(i, value);
@@ -902,7 +902,7 @@ public class TranslogTests extends ElasticsearchTestCase {
         if (reader instanceof ImmutableTranslogReader) {
             ByteBuffer buffer = ByteBuffer.allocate(4);
             try {
-                reader.readBytes(buffer, reader.firstPosition() + 4 * numOps);
+                reader.readBytes(buffer, reader.headerLength() + 4 * numOps);
                 fail("read past EOF?");
             } catch (EOFException ex) {
                 // expected
@@ -910,7 +910,7 @@ public class TranslogTests extends ElasticsearchTestCase {
         } else {
             // live reader!
             ByteBuffer buffer = ByteBuffer.allocate(4);
-            final long pos = reader.firstPosition() + 4 * numOps;
+            final long pos = reader.headerLength() + 4 * numOps;
             reader.readBytes(buffer, pos);
             buffer.flip();
             final int value = buffer.getInt();

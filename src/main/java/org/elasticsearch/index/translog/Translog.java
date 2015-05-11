@@ -409,18 +409,18 @@ public class Translog extends AbstractIndexShardComponent implements IndexShardC
     }
 
     private Snapshot createdSnapshot(TranslogReader... translogs) {
-        ArrayList<ChannelSnapshot> channelSnapshots = new ArrayList<>();
+        ArrayList<Translog.Snapshot> channelSnapshots = new ArrayList<>();
         boolean success = false;
         try {
             for (TranslogReader translog : translogs) {
-                channelSnapshots.add(translog.newChannelSnapshot());
+                channelSnapshots.add(translog.newSnapshot());
             }
             Snapshot snapshot = new TranslogSnapshot(channelSnapshots);
             success = true;
             return snapshot;
         } finally {
             if (success == false) {
-                IOUtils.closeWhileHandlingException(channelSnapshots);
+                Releasables.close(channelSnapshots);
             }
         }
     }

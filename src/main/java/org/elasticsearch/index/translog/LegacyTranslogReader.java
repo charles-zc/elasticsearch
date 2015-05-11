@@ -45,7 +45,7 @@ public final class LegacyTranslogReader extends ImmutableTranslogReader {
     }
 
     @Override
-    public Translog.Operation read(StreamInput in) throws IOException {
+    protected Translog.Operation read(BufferedChecksumStreamInput in) throws IOException {
         // read the opsize before an operation.
         // Note that this was written & read out side of the stream when this class was used, but it makes things more consistent
         // to read this here
@@ -58,7 +58,7 @@ public final class LegacyTranslogReader extends ImmutableTranslogReader {
 
 
     @Override
-    public long firstPosition() {
+    public int headerLength() {
         return 0;
     }
 

@@ -24,7 +24,6 @@ import org.elasticsearch.common.io.Channels;
 import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.Arrays;
 
 /**
  * a translog reader which is fixed in length
@@ -78,19 +77,10 @@ public class ImmutableTranslogReader extends TranslogReader {
         if (position >= length) {
             throw new EOFException("read requested past EOF. pos [" + position + "] end: [" + length + "]");
         }
-        if (position < firstPosition()) {
-            throw new IOException("read requested before position of first ops. pos [" + position + "] first op on: [" + firstPosition() + "]");
+        if (position < headerLength()) {
+            throw new IOException("read requested before position of first ops. pos [" + position + "] first op on: [" + headerLength() + "]");
         }
         Channels.readFromFileChannelWithEofException(channel, position, buffer);
-    }
-
-    @Override
-    ChannelSnapshot newChannelSnapshot() {
-        return new ChannelSnapshot(clone());
-    }
-
-    public Translog.Snapshot newSnapshot() {
-        return new TranslogSnapshot(Arrays.asList(newChannelSnapshot()));
     }
 
     public Checkpoint getInfo() {
