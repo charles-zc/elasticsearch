@@ -19,6 +19,7 @@
 
 package org.elasticsearch.index.translog;
 
+import com.carrotsearch.randomizedtesting.generators.RandomPicks;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.lucene.store.ByteArrayDataOutput;
@@ -94,7 +95,7 @@ public class TranslogTests extends ElasticsearchTestCase {
         super.setUp();
         // if a previous test failed we clean up things here
         translogDir = createTempDir();
-        translog = create();
+        translog = create(translogDir);
     }
 
     @Override
@@ -107,11 +108,11 @@ public class TranslogTests extends ElasticsearchTestCase {
         }
     }
 
-    protected Translog create() throws IOException {
+    protected Translog create(Path path) throws IOException {
         Settings build = ImmutableSettings.settingsBuilder()
                 .put("index.translog.fs.type", TranslogWriter.Type.SIMPLE.name())
                 .build();
-        TranslogConfig translogConfig = new TranslogConfig(shardId, translogDir, build, Translog.Durabilty.REQUEST, BigArrays.NON_RECYCLING_INSTANCE, null);
+        TranslogConfig translogConfig = new TranslogConfig(shardId, path, build, Translog.Durabilty.REQUEST, BigArrays.NON_RECYCLING_INSTANCE, null);
         return new Translog(translogConfig);
     }
 
@@ -1026,5 +1027,33 @@ public class TranslogTests extends ElasticsearchTestCase {
         }
         assertNull(snapshot.next());
         // no need to close
+    }
+
+    public void testLocationHashCodeEquals() throws IOException {
+        List<Translog.Location> locations = newArrayList();
+        List<Translog.Location> locations2 = newArrayList();
+        int translogOperations = randomIntBetween(10, 100);
+        try(Translog translog2 = create(createTempDir())) {
+            for (int op = 0; op < translogOperations; op++) {
+                locations.add(translog.add(new Translog.Create("test", "" + op, Integer.toString(op).getBytes(Charset.forName("UTF-8")))));
+                locations2.add(translog2.add(new Translog.Create("test", "" + op, Integer.toString(op).getBytes(Charset.forName("UTF-8")))));
+            }
+            int iters = randomIntBetween(10, 100);
+            for (int i = 0; i < iters; i++) {
+                Translog.Location location = RandomPicks.randomFrom(random(), locations);
+                for (Translog.Location loc : locations) {
+                    if (loc == location) {
+                        assertTrue(loc.equals(location));
+                        assertEquals(loc.hashCode(), location.hashCode());
+                    } else {
+                        assertFalse(loc.equals(location));
+                    }
+                }
+                for (int j = 0; j < translogOperations; j++) {
+                    assertTrue(locations.get(j).equals(locations2.get(j)));
+                    assertEquals(locations.get(j).hashCode(), locations2.get(j).hashCode());
+                }
+            }
+        }
     }
 }

@@ -105,42 +105,7 @@ public abstract class TranslogReader implements Closeable, Comparable<TranslogRe
         final ByteBuffer reusableBuffer = ByteBuffer.allocate(1024);
         final int totalOperations = totalOperations();
         channelReference.incRef();
-        return new Translog.Snapshot() {
-            private final AtomicBoolean closed = new AtomicBoolean(false);
-            long position = headerLength();
-            int readOperations = 0;
-            private BufferedChecksumStreamInput reuse = null;
-
-            @Override
-            public int estimatedTotalOperations() {
-                return totalOperations;
-            }
-
-            @Override
-            public Translog.Operation next() throws IOException {
-                if (totalOperations != -1) {
-                    if (readOperations == totalOperations) {
-                        return null;
-                    }
-                    assert readOperations < totalOperations : "readOpeartions must be less than totalOperations";
-                } else if (position >= sizeInBytes()) { // this is the legacy case.... TODO move this in a dedicated iter?
-                    return null;
-                }
-                final int opSize = readSize(reusableBuffer, position);
-                reuse = checksummedStream(reusableBuffer, position, opSize, reuse);
-                Translog.Operation op = read(reuse);
-                position += opSize;
-                readOperations++;
-                return op;
-            }
-
-            @Override
-            public void close() {
-                if (closed.compareAndSet(false, true)) {
-                    channelReference.decRef();
-                }
-            }
-        };
+        return newReaderSnapshot(totalOperations, reusableBuffer);
     }
 
     /**
@@ -214,7 +179,7 @@ public abstract class TranslogReader implements Closeable, Comparable<TranslogRe
 
         try {
             if (checkpoint.offset == 0 && checkpoint.numOps == TranslogReader.UNKNOWN_OP_COUNT) { // only old files can be empty
-                return new LegacyTranslogReader(channelReference.getTranslogId(), channelReference);
+                return new LegacyTranslogReader(channelReference.getTranslogId(), channelReference, 0);
             }
 
             InputStreamStreamInput headerStream = new InputStreamStreamInput(Channels.newInputStream(channel)); // don't close
@@ -254,21 +219,19 @@ public abstract class TranslogReader implements Closeable, Comparable<TranslogRe
                         assert checkpoint.numOps == TranslogReader.UNKNOWN_OP_COUNT : "expected unknown op count but got: " + checkpoint.numOps;
                         assert checkpoint.offset == Files.size(path) : "offset(" + checkpoint.offset + ") != file_size(" + Files.size(path) + ") for: " + path;
                         // legacy - we still have to support it somehow
-                        break;
+                        return new LegacyTranslogReaderBase(channelReference.getTranslogId(), channelReference, checkpoint.offset);
                     case TranslogWriter.VERSION_CHECKPOINTS:
                         assert path.getFileName().toString().endsWith(Translog.TRANSLOG_FILE_SUFFIX) : "new file ends with old suffix: " + path;
                         assert checkpoint.numOps > TranslogReader.UNKNOWN_OP_COUNT: "expected at least 0 operatin but got: " + checkpoint.numOps;
                         assert checkpoint.offset <= channel.size() : "checkpoint is inconsistent with channel length:" + channel.size() + " " + checkpoint;
-                        break;
+                        return new ImmutableTranslogReader(channelReference.getTranslogId(), channelReference, checkpoint.offset, checkpoint.numOps);
                     default:
                         throw new TranslogCorruptedException("No known translog stream version: " + version + " path:" + path);
                 }
-                return new ImmutableTranslogReader(channelReference.getTranslogId(), channelReference, checkpoint.offset, checkpoint.numOps);
-
             } else if (b1 == UNVERSIONED_TRANSLOG_HEADER_BYTE) {
                 assert checkpoint.numOps == TranslogReader.UNKNOWN_OP_COUNT : "expected unknown op count but got: " + checkpoint.numOps;
                 assert checkpoint.offset == Files.size(path) : "offset(" + checkpoint.offset + ") != file_size(" + Files.size(path) + ") for: " + path;
-                return new LegacyTranslogReader(channelReference.getTranslogId(), channelReference);
+                return new LegacyTranslogReader(channelReference.getTranslogId(), channelReference, checkpoint.offset);
             } else {
                 throw new TranslogCorruptedException("Invalid first byte in translog file, got: " + Long.toHexString(b1) + ", expected 0x00 or 0x3f");
             }
@@ -281,4 +244,56 @@ public abstract class TranslogReader implements Closeable, Comparable<TranslogRe
         return channelReference.getPath();
     }
 
+    protected Translog.Snapshot newReaderSnapshot(int totalOperations, ByteBuffer reusableBuffer) {
+        return new ReaderSnapshot(totalOperations, reusableBuffer);
+    }
+
+    class ReaderSnapshot implements Translog.Snapshot {
+        private final AtomicBoolean closed;
+        private final int totalOperations;
+        private final ByteBuffer reusableBuffer;
+        long position;
+        int readOperations;
+        private BufferedChecksumStreamInput reuse;
+
+        public ReaderSnapshot(int totalOperations, ByteBuffer reusableBuffer) {
+            this.totalOperations = totalOperations;
+            this.reusableBuffer = reusableBuffer;
+            closed = new AtomicBoolean(false);
+            position = headerLength();
+            readOperations = 0;
+            reuse = null;
+        }
+
+        @Override
+        public final int estimatedTotalOperations() {
+            return totalOperations;
+        }
+
+        @Override
+        public Translog.Operation next() throws IOException {
+            if (readOperations < totalOperations) {
+                assert readOperations < totalOperations : "readOpeartions must be less than totalOperations";
+                return readOperation();
+            } else {
+                return null;
+            }
+        }
+
+        protected final Translog.Operation readOperation() throws IOException {
+            final int opSize = readSize(reusableBuffer, position);
+            reuse = checksummedStream(reusableBuffer, position, opSize, reuse);
+            Translog.Operation op = read(reuse);
+            position += opSize;
+            readOperations++;
+            return op;
+        }
+
+        @Override
+        public  void close() {
+            if (closed.compareAndSet(false, true)) {
+                channelReference.decRef();
+            }
+        }
+    }
 }

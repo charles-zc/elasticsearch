@@ -31,7 +31,7 @@ import java.nio.ByteBuffer;
 public class ImmutableTranslogReader extends TranslogReader {
 
     private final int totalOperations;
-    private final long length;
+    protected final long length;
 
     /**
      * Create a snapshot of translog file channel. The length parameter should be consistent with totalOperations and point

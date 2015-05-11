@@ -19,48 +19,42 @@
 
 package org.elasticsearch.index.translog;
 
-import org.elasticsearch.common.io.stream.StreamInput;
-
 import java.io.IOException;
+import java.nio.ByteBuffer;
 
 /**
- * Version 0 of the translog format, there is no header in this file
+ * Version 1 of the translog format, there is checkpoint and therefore no notion of op count
  */
 @Deprecated
-public final class LegacyTranslogReader extends LegacyTranslogReaderBase {
+class LegacyTranslogReaderBase extends ImmutableTranslogReader {
 
     /**
      * Create a snapshot of translog file channel. The length parameter should be consistent with totalOperations and point
      * at the end of the last operation in this snapshot.
      *
-     * @param id
-     * @param channelReference
      */
-    LegacyTranslogReader(long id, ChannelReference channelReference, long fileLength) {
-        super(id, channelReference, fileLength);
-    }
-
-    @Override
-    protected Translog.Operation read(BufferedChecksumStreamInput in) throws IOException {
-        // read the opsize before an operation.
-        // Note that this was written & read out side of the stream when this class was used, but it makes things more consistent
-        // to read this here
-        in.readInt();
-        Translog.Operation.Type type = Translog.Operation.Type.fromId(in.readByte());
-        Translog.Operation operation = Translog.newOperationFromType(type);
-        operation.readFrom(in);
-        return operation;
+    LegacyTranslogReaderBase(long id, ChannelReference channelReference, long fileLength) {
+        super(id, channelReference, fileLength, TranslogReader.UNKNOWN_OP_COUNT);
     }
 
 
     @Override
-    public int headerLength() {
-        return 0;
+    protected Translog.Snapshot newReaderSnapshot(final int totalOperations, ByteBuffer reusableBuffer) {
+        assert totalOperations == -1 : "legacy we had no idea how many ops: " + totalOperations;
+        return new ReaderSnapshot(totalOperations, reusableBuffer) {
+            @Override
+            public Translog.Operation next() throws IOException {
+                if (position >= sizeInBytes()) { // this is the legacy case....
+                    return null;
+                }
+                return readOperation();
+            }
+        };
     }
 
     @Override
-    protected ImmutableTranslogReader newReader(long id, ChannelReference channelReference, long length, int totalOperations) {
+    protected ImmutableTranslogReader newReader(long id, ChannelReference channelReference, long length, int totalOperations)  {
         assert totalOperations == -1 : "expected unknown but was: " + totalOperations;
-        return new LegacyTranslogReader(id, channelReference, length);
+        return new LegacyTranslogReaderBase(id, channelReference, length);
     }
 }
