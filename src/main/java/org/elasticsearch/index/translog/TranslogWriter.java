@@ -185,7 +185,7 @@ public class TranslogWriter extends TranslogReader {
      * returns a new reader that follows the current writes (most importantly allows making
      * repeated snapshots that includes new content)
      */
-    public TranslogReader reader() {
+    public TranslogReader newReaderFromWriter() {
         ensureOpen();
         channelReference.incRef();
         boolean success = false;

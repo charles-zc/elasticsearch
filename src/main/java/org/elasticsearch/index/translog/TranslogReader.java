@@ -280,4 +280,5 @@ public abstract class TranslogReader implements Closeable, Comparable<TranslogRe
     public Path path() {
         return channelReference.getPath();
     }
+
 }

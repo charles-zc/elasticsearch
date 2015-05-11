@@ -62,6 +62,7 @@ public final class LegacyTranslogReader extends ImmutableTranslogReader {
         return 0;
     }
 
+    @Override
     protected ImmutableTranslogReader newReader(long id, ChannelReference channelReference, long length, int totalOperations) {
         return new LegacyTranslogReader(id, channelReference, length, totalOperations);
     }

@@ -36,7 +36,6 @@ import org.elasticsearch.common.lease.Releasables;
 import org.elasticsearch.common.logging.ESLogger;
 import org.elasticsearch.common.lucene.uid.Versions;
 import org.elasticsearch.common.unit.ByteSizeValue;
-import org.elasticsearch.common.util.BigArray;
 import org.elasticsearch.common.util.BigArrays;
 import org.elasticsearch.common.util.Callback;
 import org.elasticsearch.common.util.concurrent.ConcurrentCollections;
@@ -438,7 +437,7 @@ public class Translog extends AbstractIndexShardComponent implements IndexShardC
                 if (currentCommittingTranslog != null) {
                     translogs.add(currentCommittingTranslog.clone());
                 }
-                translogs.add(current.reader());
+                translogs.add(current.newReaderFromWriter());
                 FsView view = new FsView(translogs);
                 // this is safe as we know that no new translog is being made at the moment
                 // (we hold a read lock) and the view will be notified of any future one
@@ -1574,7 +1573,7 @@ public class Translog extends AbstractIndexShardComponent implements IndexShardC
             // notify all outstanding views of the new translog (no views are created now as
             // we hold a write lock).
             for (FsView view : outstandingViews) {
-                view.onNewTranslog(currentCommittingTranslog.clone(), newFile.reader());
+                view.onNewTranslog(currentCommittingTranslog.clone(), newFile.newReaderFromWriter());
             }
             IOUtils.close(writer);
             logger.trace("current translog set to [{}]", current.translogId());

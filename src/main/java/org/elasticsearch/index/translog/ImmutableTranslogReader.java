@@ -43,8 +43,8 @@ public class ImmutableTranslogReader extends TranslogReader {
         this.totalOperations = totalOperations;
     }
 
-
-    public ImmutableTranslogReader clone() {
+    @Override
+    public final TranslogReader clone() {
         if (channelReference.tryIncRef()) {
             try {
                 ImmutableTranslogReader reader = newReader(id, channelReference, length, totalOperations);
@@ -57,6 +57,7 @@ public class ImmutableTranslogReader extends TranslogReader {
             throw new IllegalStateException("can't increment translog [" + id + "] channel ref count");
         }
     }
+
 
     protected ImmutableTranslogReader newReader(long id, ChannelReference channelReference, long length, int totalOperations) {
         return new ImmutableTranslogReader(id, channelReference, length, totalOperations);
