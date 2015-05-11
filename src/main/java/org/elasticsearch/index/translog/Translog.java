@@ -36,6 +36,7 @@ import org.elasticsearch.common.lease.Releasables;
 import org.elasticsearch.common.logging.ESLogger;
 import org.elasticsearch.common.lucene.uid.Versions;
 import org.elasticsearch.common.unit.ByteSizeValue;
+import org.elasticsearch.common.util.BigArray;
 import org.elasticsearch.common.util.BigArrays;
 import org.elasticsearch.common.util.Callback;
 import org.elasticsearch.common.util.concurrent.ConcurrentCollections;
@@ -353,8 +354,6 @@ public class Translog extends AbstractIndexShardComponent implements IndexShardC
      * Read the Operation object from the given location.
      */
     public Translog.Operation read(Location location) {
-
-
         try (ReleasableLock lock = readLock.acquire()) {
             final TranslogReader reader;
             if (current.translogId() == location.translogId) {
@@ -1461,15 +1460,45 @@ public class Translog extends AbstractIndexShardComponent implements IndexShardC
         }
     }
 
-    public static Translog.Operation readOperation(StreamInput input) throws IOException {
-        // TODO: validate size to prevent OOME
-        int opSize = input.readInt();
-        // This BufferedChecksumStreamInput remains unclosed on purpose,
-        // because closing it closes the underlying stream, which we don't
-        // want to do here.
-        BufferedChecksumStreamInput in = new BufferedChecksumStreamInput(input);
+    public static Snapshot snapshotFromStream(StreamInput input, final int numOps) {
+        final BufferedChecksumStreamInput checksumStreamInput = new BufferedChecksumStreamInput(input);
+        return new Snapshot() {
+            int read = 0;
+            @Override
+            public int estimatedTotalOperations() {
+                return numOps;
+            }
+
+            @Override
+            public Operation next() throws IOException {
+                if (read < numOps) {
+                    read++;
+                    return readOperation(checksumStreamInput);
+                }
+                return null;
+            }
+
+            @Override
+            public void close() {
+                // doNothing
+            }
+        };
+    }
+
+    static Translog.Operation readOperation(BufferedChecksumStreamInput in) throws IOException {
+        int opSize = in.readInt();
         Translog.Operation operation;
         try {
+            in.resetDigest(); // size is not part of the checksum?
+            if (in.markSupported()) { // if we can we validate the checksum first
+                in.mark(opSize);
+                if (opSize < 4) { // 4byte for the checksum
+                    throw new TranslogCorruptedException("operation size must be at least 4 but was: " + opSize);
+                }
+                in.skip(opSize-4);
+                verifyChecksum(in);
+                in.reset();
+            }
             Translog.Operation.Type type = Translog.Operation.Type.fromId(in.readByte());
             operation = newOperationFromType(type);
             operation.readFrom(in);

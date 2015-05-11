@@ -45,10 +45,6 @@ public final class ChannelSnapshot implements Closeable {
         totalOperations = this.reader.totalOperations();
     }
 
-    public long translogId() {
-        return reader.translogId();
-    }
-
     public int estimatedTotalOperations() {
         return reader.totalOperations();
     }

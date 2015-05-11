@@ -27,8 +27,8 @@ import org.apache.lucene.util.LuceneTestCase;
 import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.common.bytes.BytesArray;
 import org.elasticsearch.common.io.FileSystemUtils;
-import org.elasticsearch.common.io.stream.BytesStreamInput;
 import org.elasticsearch.common.io.stream.BytesStreamOutput;
+import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.settings.ImmutableSettings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.util.BigArrays;
@@ -157,6 +157,8 @@ public class TranslogTests extends ElasticsearchTestCase {
         assertThat(translog.read(loc3).getSource().source.toBytesArray(), equalTo(new BytesArray(new byte[]{3})));
         translog.sync();
         assertThat(translog.read(loc3).getSource().source.toBytesArray(), equalTo(new BytesArray(new byte[]{3})));
+
+
     }
 
     @Test
@@ -225,7 +227,7 @@ public class TranslogTests extends ElasticsearchTestCase {
         if (randomBoolean()) {
             BytesStreamOutput out = new BytesStreamOutput();
             stats.writeTo(out);
-            BytesStreamInput in = new BytesStreamInput(out.bytes());
+            StreamInput in = StreamInput.wrap(out.bytes());
             stats = new TranslogStats();
             stats.readFrom(in);
         }
@@ -493,7 +495,6 @@ public class TranslogTests extends ElasticsearchTestCase {
     }
 
     @Test
-    @LuceneTestCase.BadApple(bugUrl = "corrupting size can cause OOME")
     public void testTranslogChecksums() throws Exception {
         List<Translog.Location> locations = newArrayList();
 
@@ -1008,4 +1009,22 @@ public class TranslogTests extends ElasticsearchTestCase {
 
     }
 
+
+    public void testSnapshotFromStreamInput() throws IOException {
+        BytesStreamOutput out = new BytesStreamOutput();
+        List<Translog.Operation> ops = newArrayList();
+        int translogOperations = randomIntBetween(10, 100);
+        for (int op = 0; op < translogOperations; op++) {
+            Translog.Create test = new Translog.Create("test", "" + op, Integer.toString(op).getBytes(Charset.forName("UTF-8")));
+            Translog.writeOperation(out, test);
+            ops.add(test);
+        }
+        Translog.Snapshot snapshot = Translog.snapshotFromStream(StreamInput.wrap(out.bytes()), ops.size());
+        assertEquals(ops.size(), snapshot.estimatedTotalOperations());
+        for (Translog.Operation op : ops) {
+            assertEquals(op, snapshot.next());
+        }
+        assertNull(snapshot.next());
+        // no need to close
+    }
 }

@@ -27,6 +27,7 @@ import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.lucene.store.InputStreamDataInput;
 import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.common.bytes.BytesArray;
+import org.elasticsearch.common.io.stream.ByteBufferStreamInput;
 import org.elasticsearch.common.io.stream.InputStreamStreamInput;
 import org.elasticsearch.common.io.stream.StreamInput;
 
@@ -116,14 +117,13 @@ public abstract class TranslogReader implements Closeable, Comparable<TranslogRe
         buffer.limit(opSize);
         readBytes(buffer, position);
         buffer.flip();
-        BytesArray bytesArray = new BytesArray(buffer.array(), 0, buffer.limit());
-        return read(bytesArray.streamInput());
+        return read(new ByteBufferStreamInput(buffer));
     }
 
 
 
     public Translog.Operation read(StreamInput inStream) throws IOException {
-        return Translog.readOperation(inStream);
+        return Translog.readOperation(new BufferedChecksumStreamInput(inStream)); //nocommit - a new BufferedChecksumStreamInput for each op might be expensive?
     }
 
     /**

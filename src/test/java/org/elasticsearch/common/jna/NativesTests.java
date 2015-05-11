@@ -28,9 +28,9 @@ import static org.hamcrest.Matchers.equalTo;
 public class NativesTests extends ElasticsearchTestCase {
 
     @Test
-    public void testMlockall() {
+    public void testMlockhall() {
         if (Constants.WINDOWS) {
-            assertFalse("Memory locking is not available on Windows platforms", Natives.LOCAL_MLOCKALL);
+            assertTrue("Memory locking available on Windows platforms via virtual lock", Natives.LOCAL_MLOCKALL);
         }
         if (Constants.MAC_OS_X) {
             assertFalse("Memory locking is not available on OS X platforms", Natives.LOCAL_MLOCKALL);
