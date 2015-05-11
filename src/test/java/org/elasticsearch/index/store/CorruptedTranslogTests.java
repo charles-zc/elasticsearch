@@ -35,6 +35,7 @@ import org.elasticsearch.common.settings.ImmutableSettings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.index.shard.IndexShard;
 import org.elasticsearch.index.translog.Translog;
+import org.elasticsearch.index.translog.TranslogConfig;
 import org.elasticsearch.monitor.fs.FsStats;
 import org.elasticsearch.test.ElasticsearchIntegrationTest;
 import org.elasticsearch.test.engine.MockEngineSupport;
@@ -82,7 +83,7 @@ public class CorruptedTranslogTests extends ElasticsearchIntegrationTest {
                 .put("index.refresh_interval", "-1")
                 .put(MockEngineSupport.FLUSH_ON_CLOSE_RATIO, 0.0d) // never flush - always recover from translog
                 .put(IndexShard.INDEX_FLUSH_ON_CLOSE, false) // never flush - always recover from translog
-                .put(Translog.INDEX_TRANSLOG_SYNC_INTERVAL, "1s") // fsync the translog every second
+                .put(TranslogConfig.INDEX_TRANSLOG_SYNC_INTERVAL, "1s") // fsync the translog every second
         ));
         ensureYellow();
 
