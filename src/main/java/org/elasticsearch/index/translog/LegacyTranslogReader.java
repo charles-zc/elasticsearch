@@ -33,11 +33,11 @@ public final class LegacyTranslogReader extends LegacyTranslogReaderBase {
      * Create a snapshot of translog file channel. The length parameter should be consistent with totalOperations and point
      * at the end of the last operation in this snapshot.
      *
-     * @param id
+     * @param generation
      * @param channelReference
      */
-    LegacyTranslogReader(long id, ChannelReference channelReference, long fileLength) {
-        super(id, channelReference, 0, fileLength);
+    LegacyTranslogReader(long generation, ChannelReference channelReference, long fileLength) {
+        super(generation, channelReference, 0, fileLength);
     }
 
     @Override
@@ -55,9 +55,9 @@ public final class LegacyTranslogReader extends LegacyTranslogReaderBase {
 
 
     @Override
-    protected ImmutableTranslogReader newReader(long id, ChannelReference channelReference, long firstOperationOffset, long length, int totalOperations) {
+    protected ImmutableTranslogReader newReader(long generation, ChannelReference channelReference, long firstOperationOffset, long length, int totalOperations) {
         assert totalOperations == -1 : "expected unknown but was: " + totalOperations;
         assert firstOperationOffset == 0;
-        return new LegacyTranslogReader(id, channelReference, length);
+        return new LegacyTranslogReader(generation, channelReference, length);
     }
 }

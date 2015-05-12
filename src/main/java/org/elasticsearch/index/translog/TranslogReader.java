@@ -28,7 +28,6 @@ import org.apache.lucene.store.InputStreamDataInput;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.RamUsageEstimator;
 import org.elasticsearch.ElasticsearchException;
-import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.io.stream.ByteBufferStreamInput;
 import org.elasticsearch.common.io.stream.InputStreamStreamInput;
 
@@ -49,21 +48,21 @@ public abstract class TranslogReader implements Closeable, Comparable<TranslogRe
     private static final byte LUCENE_CODEC_HEADER_BYTE = 0x3f;
     private static final byte UNVERSIONED_TRANSLOG_HEADER_BYTE = 0x00;
 
-    protected final long id;
+    protected final long generation;
     protected final ChannelReference channelReference;
     protected final FileChannel channel;
     protected final AtomicBoolean closed = new AtomicBoolean(false);
     protected final long firstOperationOffset;
 
-    public TranslogReader(long id, ChannelReference channelReference, long firstOperationOffset) {
-        this.id = id;
+    public TranslogReader(long generation, ChannelReference channelReference, long firstOperationOffset) {
+        this.generation = generation;
         this.channelReference = channelReference;
         this.channel = channelReference.getChannel();
         this.firstOperationOffset = firstOperationOffset;
     }
 
-    public long translogId() {
-        return this.id;
+    public long getGeneration() {
+        return this.generation;
     }
 
     public abstract long sizeInBytes();
@@ -75,7 +74,7 @@ public abstract class TranslogReader implements Closeable, Comparable<TranslogRe
     }
 
     public Translog.Operation read(Translog.Location location) throws IOException {
-        assert location.translogId == id : "read location's translog id [" + location.translogId + "] is not [" + id + "]";
+        assert location.generation == generation : "read location's translog generation [" + location.generation + "] is not [" + generation + "]";
         ByteBuffer buffer = ByteBuffer.allocate(location.size);
         try (BufferedChecksumStreamInput checksumStreamInput = checksummedStream(buffer, location.translogLocation, location.size, null)) {
             return read(checksumStreamInput);
@@ -151,18 +150,18 @@ public abstract class TranslogReader implements Closeable, Comparable<TranslogRe
 
     protected void ensureOpen() {
         if (closed.get()) {
-            throw new AlreadyClosedException("translog [" + translogId() + "] is already closed");
+            throw new AlreadyClosedException("translog [" + getGeneration() + "] is already closed");
         }
     }
 
     @Override
     public String toString() {
-        return "translog [" + id + "][" + channelReference.getPath() + "]";
+        return "translog [" + generation + "][" + channelReference.getPath() + "]";
     }
 
     @Override
     public int compareTo(TranslogReader o) {
-        return Long.compare(translogId(), o.translogId());
+        return Long.compare(getGeneration(), o.getGeneration());
     }
 
 
@@ -178,11 +177,11 @@ public abstract class TranslogReader implements Closeable, Comparable<TranslogRe
     public static ImmutableTranslogReader open(ChannelReference channelReference, Checkpoint checkpoint, String translogUUID) throws IOException {
         final FileChannel channel = channelReference.getChannel();
         final Path path = channelReference.getPath();
-        assert channelReference.getTranslogId() == checkpoint.translogId : "expected id: " + channelReference.getTranslogId() + " but got: " + checkpoint.translogId;
+        assert channelReference.getGeneration() == checkpoint.generation : "expected generation: " + channelReference.getGeneration() + " but got: " + checkpoint.generation;
 
         try {
             if (checkpoint.offset == 0 && checkpoint.numOps == TranslogReader.UNKNOWN_OP_COUNT) { // only old files can be empty
-                return new LegacyTranslogReader(channelReference.getTranslogId(), channelReference, 0);
+                return new LegacyTranslogReader(channelReference.getGeneration(), channelReference, 0);
             }
 
             InputStreamStreamInput headerStream = new InputStreamStreamInput(Channels.newInputStream(channel)); // don't close
@@ -222,7 +221,7 @@ public abstract class TranslogReader implements Closeable, Comparable<TranslogRe
                         assert checkpoint.numOps == TranslogReader.UNKNOWN_OP_COUNT : "expected unknown op count but got: " + checkpoint.numOps;
                         assert checkpoint.offset == Files.size(path) : "offset(" + checkpoint.offset + ") != file_size(" + Files.size(path) + ") for: " + path;
                         // legacy - we still have to support it somehow
-                        return new LegacyTranslogReaderBase(channelReference.getTranslogId(), channelReference, CodecUtil.headerLength(TranslogWriter.TRANSLOG_CODEC), checkpoint.offset);
+                        return new LegacyTranslogReaderBase(channelReference.getGeneration(), channelReference, CodecUtil.headerLength(TranslogWriter.TRANSLOG_CODEC), checkpoint.offset);
                     case TranslogWriter.VERSION_CHECKPOINTS:
                         assert path.getFileName().toString().endsWith(Translog.TRANSLOG_FILE_SUFFIX) : "new file ends with old suffix: " + path;
                         assert checkpoint.numOps > TranslogReader.UNKNOWN_OP_COUNT: "expected at least 0 operatin but got: " + checkpoint.numOps;
@@ -235,16 +234,16 @@ public abstract class TranslogReader implements Closeable, Comparable<TranslogRe
                         ref.length = len;
                         headerStream.read(ref.bytes, ref.offset, ref.length);
                         if (ref.utf8ToString().equals(translogUUID) == false) {
-                            throw new IllegalStateException("expected shard UUID [" + translogUUID + "] but got: [" + ref.utf8ToString() + "] this translog file belongs to a different translog");
+                            throw new TranslogCorruptedException("expected shard UUID [" + translogUUID + "] but got: [" + ref.utf8ToString() + "] this translog file belongs to a different translog");
                         }
-                        return new ImmutableTranslogReader(channelReference.getTranslogId(), channelReference, ref.length + CodecUtil.headerLength(TranslogWriter.TRANSLOG_CODEC) + RamUsageEstimator.NUM_BYTES_INT, checkpoint.offset, checkpoint.numOps);
+                        return new ImmutableTranslogReader(channelReference.getGeneration(), channelReference, ref.length + CodecUtil.headerLength(TranslogWriter.TRANSLOG_CODEC) + RamUsageEstimator.NUM_BYTES_INT, checkpoint.offset, checkpoint.numOps);
                     default:
                         throw new TranslogCorruptedException("No known translog stream version: " + version + " path:" + path);
                 }
             } else if (b1 == UNVERSIONED_TRANSLOG_HEADER_BYTE) {
                 assert checkpoint.numOps == TranslogReader.UNKNOWN_OP_COUNT : "expected unknown op count but got: " + checkpoint.numOps;
                 assert checkpoint.offset == Files.size(path) : "offset(" + checkpoint.offset + ") != file_size(" + Files.size(path) + ") for: " + path;
-                return new LegacyTranslogReader(channelReference.getTranslogId(), channelReference, checkpoint.offset);
+                return new LegacyTranslogReader(channelReference.getGeneration(), channelReference, checkpoint.offset);
             } else {
                 throw new TranslogCorruptedException("Invalid first byte in translog file, got: " + Long.toHexString(b1) + ", expected 0x00 or 0x3f");
             }

@@ -434,4 +434,8 @@ public final class EngineConfig {
         return translogConfig;
     }
 
+    IndexSettingsService getIndexSettingsService() { // for testing
+        return indexSettingsService;
+    }
+
 }

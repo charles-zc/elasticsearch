@@ -27,7 +27,6 @@ import org.elasticsearch.common.io.Channels;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.OpenOption;
@@ -39,21 +38,21 @@ class Checkpoint {
 
    static final int BUFFER_SIZE = RamUsageEstimator.NUM_BYTES_INT  // ops
             + RamUsageEstimator.NUM_BYTES_LONG // offset
-            + RamUsageEstimator.NUM_BYTES_LONG;// id
+            + RamUsageEstimator.NUM_BYTES_LONG;// generation
     final long offset;
     final int numOps;
-    final long translogId;
+    final long generation;
 
-    Checkpoint(long offset, int numOps, long translogId) {
+    Checkpoint(long offset, int numOps, long generation) {
         this.offset = offset;
         this.numOps = numOps;
-        this.translogId = translogId;
+        this.generation = generation;
     }
 
     Checkpoint(DataInput in) throws IOException {
         offset = in.readLong();
         numOps = in.readInt();
-        translogId = in.readLong();
+        generation = in.readLong();
     }
 
     void write(FileChannel channel) throws IOException {
@@ -66,7 +65,7 @@ class Checkpoint {
     public void write(DataOutput out) throws IOException {
         out.writeLong(offset);
         out.writeInt(numOps);
-        out.writeLong(translogId);
+        out.writeLong(generation);
     }
 
     @Override
@@ -74,7 +73,7 @@ class Checkpoint {
         return "TranslogInfo{" +
                 "offset=" + offset +
                 ", numOps=" + numOps +
-                ", translogId= " + translogId +
+                ", translogFileGeneration= " + generation +
                 '}';
     }
 

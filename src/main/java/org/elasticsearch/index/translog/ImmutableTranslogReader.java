@@ -37,8 +37,8 @@ public class ImmutableTranslogReader extends TranslogReader {
      * Create a snapshot of translog file channel. The length parameter should be consistent with totalOperations and point
      * at the end of the last operation in this snapshot.
      */
-    public ImmutableTranslogReader(long id, ChannelReference channelReference, long offset, long length, int totalOperations) {
-        super(id, channelReference, offset);
+    public ImmutableTranslogReader(long generation, ChannelReference channelReference, long offset, long length, int totalOperations) {
+        super(generation, channelReference, offset);
         this.length = length;
         this.totalOperations = totalOperations;
     }
@@ -47,20 +47,20 @@ public class ImmutableTranslogReader extends TranslogReader {
     public final TranslogReader clone() {
         if (channelReference.tryIncRef()) {
             try {
-                ImmutableTranslogReader reader = newReader(id, channelReference, firstOperationOffset, length, totalOperations);
+                ImmutableTranslogReader reader = newReader(generation, channelReference, firstOperationOffset, length, totalOperations);
                 channelReference.incRef(); // for the new object
                 return reader;
             } finally {
                 channelReference.decRef();
             }
         } else {
-            throw new IllegalStateException("can't increment translog [" + id + "] channel ref count");
+            throw new IllegalStateException("can't increment translog [" + generation + "] channel ref count");
         }
     }
 
 
-    protected ImmutableTranslogReader newReader(long id, ChannelReference channelReference, long offset, long length, int totalOperations) {
-        return new ImmutableTranslogReader(id, channelReference, offset, length, totalOperations);
+    protected ImmutableTranslogReader newReader(long generation, ChannelReference channelReference, long offset, long length, int totalOperations) {
+        return new ImmutableTranslogReader(generation, channelReference, offset, length, totalOperations);
     }
 
     public long sizeInBytes() {
@@ -85,7 +85,7 @@ public class ImmutableTranslogReader extends TranslogReader {
     }
 
     public Checkpoint getInfo() {
-        return new Checkpoint(length, totalOperations, translogId());
+        return new Checkpoint(length, totalOperations, getGeneration());
     }
 
 }

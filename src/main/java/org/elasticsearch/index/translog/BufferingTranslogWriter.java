@@ -38,8 +38,8 @@ public final class BufferingTranslogWriter extends TranslogWriter {
     /* the total offset of this file including the bytes written to the file as well as into the buffer */
     private volatile long totalOffset;
 
-    public BufferingTranslogWriter(ShardId shardId, long id, ChannelReference channelReference, int bufferSize) throws IOException {
-        super(shardId, id, channelReference);
+    public BufferingTranslogWriter(ShardId shardId, long generation, ChannelReference channelReference, int bufferSize) throws IOException {
+        super(shardId, generation, channelReference);
         this.buffer = new byte[bufferSize];
         this.totalOffset = writtenOffset;
     }
@@ -56,14 +56,14 @@ public final class BufferingTranslogWriter extends TranslogWriter {
                 data.writeTo(channel);
                 writtenOffset += data.length();
                 totalOffset += data.length();
-                return new Translog.Location(id, offset, data.length());
+                return new Translog.Location(generation, offset, data.length());
             }
             if (data.length() > buffer.length - bufferCount) {
                 flush();
             }
             data.writeTo(bufferOs);
             totalOffset += data.length();
-            return new Translog.Location(id, offset, data.length());
+            return new Translog.Location(generation, offset, data.length());
         }
     }
 

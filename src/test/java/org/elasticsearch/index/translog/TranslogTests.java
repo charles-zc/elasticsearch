@@ -19,6 +19,7 @@
 
 package org.elasticsearch.index.translog;
 
+import com.carrotsearch.randomizedtesting.annotations.Repeat;
 import com.carrotsearch.randomizedtesting.generators.RandomPicks;
 import org.apache.lucene.codecs.CodecUtil;
 import org.apache.lucene.index.Term;
@@ -39,6 +40,7 @@ import org.elasticsearch.common.util.concurrent.ConcurrentCollections;
 import org.elasticsearch.index.Index;
 import org.elasticsearch.index.VersionType;
 import org.elasticsearch.index.shard.ShardId;
+import org.elasticsearch.snapshots.Snapshot;
 import org.elasticsearch.test.ElasticsearchTestCase;
 import org.hamcrest.Matchers;
 import org.junit.After;
@@ -79,13 +81,13 @@ public class TranslogTests extends ElasticsearchTestCase {
         super.afterIfSuccessful();
 
         if (translog.isOpen()) {
-            if (translog.currentId() > 1) {
+            if (translog.currentFileGeneration() > 1) {
                 translog.commit();
-                assertFileDeleted(translog, translog.currentId() - 1);
+                assertFileDeleted(translog, translog.currentFileGeneration() - 1);
             }
             translog.close();
         }
-        assertFileIsPresent(translog, translog.currentId());
+        assertFileIsPresent(translog, translog.currentFileGeneration());
         IOUtils.rm(translog.location()); // delete all the locations
 
     }
@@ -206,9 +208,9 @@ public class TranslogTests extends ElasticsearchTestCase {
 
         snapshot.close();
 
-        long firstId = translog.currentId();
+        long firstId = translog.currentFileGeneration();
         translog.prepareCommit();
-        assertThat(translog.currentId(), Matchers.not(equalTo(firstId)));
+        assertThat(translog.currentFileGeneration(), Matchers.not(equalTo(firstId)));
 
         snapshot = translog.newSnapshot();
         assertThat(snapshot, SnapshotMatchers.equalsTo(ops));
@@ -699,7 +701,7 @@ public class TranslogTests extends ElasticsearchTestCase {
                     view = translog.newView();
                     // captures the currently written ops so we know what to expect from the view
                     writtenOpsAtView = new HashSet<>(writtenOps.keySet());
-                    logger.debug("--> [{}] opened view from [{}]", threadId, view.minTranslogId());
+                    logger.debug("--> [{}] opened view from [{}]", threadId, view.minTranslogGeneration());
                 }
 
                 @Override
@@ -726,7 +728,7 @@ public class TranslogTests extends ElasticsearchTestCase {
                             boolean failed = false;
                             for (Translog.Operation op : expectedOps) {
                                 final Translog.Location loc = writtenOps.get(op);
-                                if (loc.translogId < view.minTranslogId()) {
+                                if (loc.generation < view.minTranslogGeneration()) {
                                     // writtenOps is only updated after the op was written to the translog. This mean
                                     // that ops written to the translog before the view was taken (and will be missing from the view)
                                     // may yet be available in writtenOpsAtView, meaning we will erroneously expect them
@@ -824,7 +826,7 @@ public class TranslogTests extends ElasticsearchTestCase {
             max = max(max, location);
         }
 
-        assertEquals(max.translogId, translog.currentId());
+        assertEquals(max.generation, translog.currentFileGeneration());
         final Translog.Operation read = translog.read(max);
         assertEquals(read.getSource().source.toUtf8(), Integer.toString(count));
     }
@@ -852,7 +854,7 @@ public class TranslogTests extends ElasticsearchTestCase {
         final Translog.Location lastLocation = translog.add(new Translog.Create("test", "" + translogOperations, Integer.toString(translogOperations).getBytes(Charset.forName("UTF-8"))));
 
         final Checkpoint checkpoint = Checkpoint.read(translog.location().resolve(Translog.CHECKPOINT_FILE_NAME));
-        try (final ImmutableTranslogReader reader = translog.openReader(translog.location().resolve(translog.getFilename(translog.currentId())), checkpoint)) {
+        try (final ImmutableTranslogReader reader = translog.openReader(translog.location().resolve(translog.getFilename(translog.currentFileGeneration())), checkpoint)) {
             assertEquals(lastSynced + 1, reader.totalOperations());
             for (int op = 0; op < translogOperations; op++) {
                 Translog.Location location = locations.get(op);
@@ -926,7 +928,7 @@ public class TranslogTests extends ElasticsearchTestCase {
     public void testBasicRecovery() throws IOException {
         List<Translog.Location> locations = newArrayList();
         int translogOperations = randomIntBetween(10, 100);
-        Translog.TranslogCommit translogCommit = null;
+        Translog.TranslogGeneration translogGeneration = null;
         int minUncommittedOp = -1;
         final boolean commitOften = randomBoolean();
         for (int op = 0; op < translogOperations; op++) {
@@ -935,28 +937,28 @@ public class TranslogTests extends ElasticsearchTestCase {
             if (commit && op < translogOperations-1) {
                 translog.commit();
                 minUncommittedOp = op+1;
-                translogCommit = translog.getTranslogCommit();
+                translogGeneration = translog.getGeneration();
             }
         }
         translog.sync();
         TranslogConfig config = translog.getConfig();
 
         translog.close();
-        config.setTranslogCommit(translogCommit);
+        config.setTranslogGeneration(translogGeneration);
         translog = new Translog(config);
-        if (translogCommit == null) {
+        if (translogGeneration == null) {
             assertEquals(0, translog.stats().estimatedNumberOfOperations());
-            assertEquals(1, translog.currentId());
+            assertEquals(1, translog.currentFileGeneration());
             assertFalse(translog.syncNeeded());
             try (Translog.Snapshot snapshot = translog.newSnapshot()) {
                 assertNull(snapshot.next());
             }
         } else {
-            assertEquals("lastCommitted must be 1 less than current", translogCommit.translogId + 1, translog.currentId());
+            assertEquals("lastCommitted must be 1 less than current", translogGeneration.translogFileGeneration + 1, translog.currentFileGeneration());
             assertFalse(translog.syncNeeded());
             try (Translog.Snapshot snapshot = translog.newSnapshot()) {
                 for (int i = minUncommittedOp; i < translogOperations; i++) {
-                    assertEquals("expected operation" + i + " to be in the previous translog but wasn't", translog.currentId() - 1, locations.get(i).translogId);
+                    assertEquals("expected operation" + i + " to be in the previous translog but wasn't", translog.currentFileGeneration() - 1, locations.get(i).generation);
                     Translog.Operation next = snapshot.next();
                     assertNotNull("operation " + i + " must be non-null", next);
                     assertEquals(i, Integer.parseInt(next.getSource().source.toUtf8()));
@@ -969,15 +971,15 @@ public class TranslogTests extends ElasticsearchTestCase {
         List<Translog.Location> locations = newArrayList();
         int translogOperations = randomIntBetween(10, 100);
         final int prepareOp = randomIntBetween(0, translogOperations-1);
-        Translog.TranslogCommit translogCommit = null;
+        Translog.TranslogGeneration translogGeneration = null;
         final boolean sync = randomBoolean();
         for (int op = 0; op < translogOperations; op++) {
             locations.add(translog.add(new Translog.Create("test", "" + op, Integer.toString(op).getBytes(Charset.forName("UTF-8")))));
             if (op == prepareOp) {
-                translogCommit = translog.getTranslogCommit();
+                translogGeneration = translog.getGeneration();
                 translog.prepareCommit();
-                assertEquals("expected this to be the first commit", 1l, translogCommit.translogId);
-                assertNotNull(translogCommit.translogUUID);
+                assertEquals("expected this to be the first commit", 1l, translogGeneration.translogFileGeneration);
+                assertNotNull(translogGeneration.translogUUID);
             }
         }
         if (sync) {
@@ -986,10 +988,10 @@ public class TranslogTests extends ElasticsearchTestCase {
         // we intentionally don't close the tlog that is in the prepareCommit stage since we try to recovery the uncommitted
         // translog here as well.
         TranslogConfig config = translog.getConfig();
-        config.setTranslogCommit(translogCommit);
+        config.setTranslogGeneration(translogGeneration);
         try (Translog translog = new Translog(config)) {
-            assertNotNull(translogCommit);
-            assertEquals("lastCommitted must be 2 less than current - we never finished the commit", translogCommit.translogId + 2, translog.currentId());
+            assertNotNull(translogGeneration);
+            assertEquals("lastCommitted must be 2 less than current - we never finished the commit", translogGeneration.translogFileGeneration + 2, translog.currentFileGeneration());
             assertFalse(translog.syncNeeded());
             try (Translog.Snapshot snapshot = translog.newSnapshot()) {
                 int upTo = sync ? translogOperations : prepareOp;
@@ -1002,8 +1004,8 @@ public class TranslogTests extends ElasticsearchTestCase {
         }
         if (randomBoolean()) { // recover twice
             try (Translog translog = new Translog(config)) {
-                assertNotNull(translogCommit);
-                assertEquals("lastCommitted must be 3 less than current - we never finished the commit and run recovery twice", translogCommit.translogId + 3, translog.currentId());
+                assertNotNull(translogGeneration);
+                assertEquals("lastCommitted must be 3 less than current - we never finished the commit and run recovery twice", translogGeneration.translogFileGeneration + 3, translog.currentFileGeneration());
                 assertFalse(translog.syncNeeded());
                 try (Translog.Snapshot snapshot = translog.newSnapshot()) {
                     int upTo = sync ? translogOperations : prepareOp;
@@ -1062,6 +1064,40 @@ public class TranslogTests extends ElasticsearchTestCase {
                     assertEquals(locations.get(j).hashCode(), locations2.get(j).hashCode());
                 }
             }
+        }
+    }
+
+    public void testOpenForeignTranslog() throws IOException {
+        List<Translog.Location> locations = newArrayList();
+        int translogOperations = randomIntBetween(1, 10);
+        int firstUncommitted = 0;
+        for (int op = 0; op < translogOperations; op++) {
+            locations.add(translog.add(new Translog.Create("test", "" + op, Integer.toString(op).getBytes(Charset.forName("UTF-8")))));
+            if (randomBoolean()) {
+                translog.commit();
+                firstUncommitted = op + 1;
+            }
+        }
+        TranslogConfig config = translog.getConfig();
+        Translog.TranslogGeneration translogGeneration = translog.getGeneration();
+        translog.close();
+
+        config.setTranslogGeneration(new Translog.TranslogGeneration(randomRealisticUnicodeOfCodepointLengthBetween(1, translogGeneration.translogUUID.length()),translogGeneration.translogFileGeneration));
+        try {
+            new Translog(config);
+            fail("translog doesn't belong to this UUID");
+        } catch (TranslogCorruptedException ex) {
+
+        }
+        config.setTranslogGeneration(translogGeneration);
+        this.translog = new Translog(config);
+        try (Translog.Snapshot snapshot = this.translog.newSnapshot()) {
+            for (int i = firstUncommitted; i < translogOperations; i++) {
+                Translog.Operation next = snapshot.next();
+                assertNotNull("" + i, next);
+                assertEquals(Integer.parseInt(next.getSource().source.toUtf8()), i);
+            }
+            assertNull(snapshot.next());
         }
     }
 }

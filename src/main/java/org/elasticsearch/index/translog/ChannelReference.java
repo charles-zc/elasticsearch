@@ -30,19 +30,19 @@ import java.nio.file.*;
 final class ChannelReference extends AbstractRefCounted {
     private final Path file;
     private final FileChannel channel;
-    protected final long translogId;
+    protected final long generation;
     private final Callback<ChannelReference> onClose;
 
-    ChannelReference(Path file, long translogId, FileChannel channel, Callback<ChannelReference> onClose) throws IOException {
+    ChannelReference(Path file, long generation, FileChannel channel, Callback<ChannelReference> onClose) throws IOException {
         super(file.toString());
-        this.translogId = translogId;
+        this.generation = generation;
         this.file = file;
         this.channel = channel;
         this.onClose = onClose;
     }
 
-    public long getTranslogId() {
-        return translogId;
+    public long getGeneration() {
+        return generation;
     }
 
     public Path getPath() {

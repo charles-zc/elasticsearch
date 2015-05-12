@@ -20,7 +20,6 @@
 package org.elasticsearch.index.translog;
 
 import org.apache.lucene.codecs.CodecUtil;
-import org.apache.lucene.store.ByteArrayDataOutput;
 import org.apache.lucene.store.OutputStreamDataOutput;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.IOUtils;
@@ -56,8 +55,8 @@ public class TranslogWriter extends TranslogReader {
     /* the offset in bytes written to the file */
     protected volatile long writtenOffset;
 
-    public TranslogWriter(ShardId shardId, long id, ChannelReference channelReference) throws IOException {
-        super(id, channelReference, channelReference.getChannel().position());
+    public TranslogWriter(ShardId shardId, long generation, ChannelReference channelReference) throws IOException {
+        super(generation, channelReference, channelReference.getChannel().position());
         this.shardId = shardId;
         ReadWriteLock rwl = new ReentrantReadWriteLock();
         readLock = new ReleasableLock(rwl.readLock());
@@ -105,18 +104,18 @@ public class TranslogWriter extends TranslogReader {
 
         SIMPLE() {
             @Override
-            public TranslogWriter create(ShardId shardId, long id, ChannelReference channelReference, int bufferSize) throws IOException {
-                return new TranslogWriter(shardId, id, channelReference);
+            public TranslogWriter create(ShardId shardId, long generation, ChannelReference channelReference, int bufferSize) throws IOException {
+                return new TranslogWriter(shardId, generation, channelReference);
             }
         },
         BUFFERED() {
             @Override
-            public TranslogWriter create(ShardId shardId, long id, ChannelReference channelReference, int bufferSize) throws IOException {
-                return new BufferingTranslogWriter(shardId, id, channelReference, bufferSize);
+            public TranslogWriter create(ShardId shardId, long generation, ChannelReference channelReference, int bufferSize) throws IOException {
+                return new BufferingTranslogWriter(shardId, generation, channelReference, bufferSize);
             }
         };
 
-        public abstract TranslogWriter create(ShardId shardId, long id, ChannelReference raf, int bufferSize) throws IOException;
+        public abstract TranslogWriter create(ShardId shardId, long generation, ChannelReference raf, int bufferSize) throws IOException;
 
         public static Type fromString(String type) {
             if (SIMPLE.name().equalsIgnoreCase(type)) {
@@ -141,7 +140,7 @@ public class TranslogWriter extends TranslogReader {
             writtenOffset = writtenOffset + data.length();
             operationCounter = operationCounter + 1;
         }
-        return new Translog.Location(id, position, data.length());
+        return new Translog.Location(generation, position, data.length());
     }
 
     /**
@@ -196,7 +195,7 @@ public class TranslogWriter extends TranslogReader {
         channelReference.incRef();
         boolean success = false;
         try {
-            TranslogReader reader = new InnerReader(this.id, firstOperationOffset, channelReference);
+            TranslogReader reader = new InnerReader(this.generation, firstOperationOffset, channelReference);
             success = true;
             return reader;
         } finally {
@@ -215,7 +214,7 @@ public class TranslogWriter extends TranslogReader {
         if (channelReference.tryIncRef()) {
             try (ReleasableLock lock = writeLock.acquire()) {
                 flush();
-                ImmutableTranslogReader reader = new ImmutableTranslogReader(this.id, channelReference, firstOperationOffset, writtenOffset, operationCounter);
+                ImmutableTranslogReader reader = new ImmutableTranslogReader(this.generation, channelReference, firstOperationOffset, writtenOffset, operationCounter);
                 channelReference.incRef(); // for new reader
                 return reader;
             } catch (Exception e) {
@@ -240,8 +239,8 @@ public class TranslogWriter extends TranslogReader {
      */
     final class InnerReader extends TranslogReader {
 
-        public InnerReader(long id, long fistOperationOffset, ChannelReference channelReference) {
-            super(id, channelReference, fistOperationOffset);
+        public InnerReader(long generation, long fistOperationOffset, ChannelReference channelReference) {
+            super(generation, channelReference, fistOperationOffset);
         }
 
         @Override
@@ -291,12 +290,12 @@ public class TranslogWriter extends TranslogReader {
 
     protected synchronized void checkpoint(long lastSyncPosition, int operationCounter, ChannelReference channelReference) throws IOException {
         channelReference.getChannel().force(false);
-        writeCheckpoint(lastSyncPosition, operationCounter, channelReference.getPath().getParent(), channelReference.getTranslogId(), StandardOpenOption.WRITE);
+        writeCheckpoint(lastSyncPosition, operationCounter, channelReference.getPath().getParent(), channelReference.getGeneration(), StandardOpenOption.WRITE);
     }
 
-    private static void writeCheckpoint(long syncPosition, int numOperations, Path translogFile, long translogId, OpenOption... options) throws IOException {
+    private static void writeCheckpoint(long syncPosition, int numOperations, Path translogFile, long generation, OpenOption... options) throws IOException {
         final Path checkpointFile = translogFile.resolve(Translog.CHECKPOINT_FILE_NAME);
-        Checkpoint checkpoint = new Checkpoint(syncPosition, numOperations, translogId);
+        Checkpoint checkpoint = new Checkpoint(syncPosition, numOperations, generation);
         Checkpoint.write(checkpointFile, checkpoint, options);
     }
 }
