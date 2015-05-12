@@ -129,13 +129,14 @@ public class TranslogWriter extends TranslogReader {
      */
     public Translog.Location add(BytesReference data) throws IOException {
         ensureOpen();
+        final long position;
         try (ReleasableLock lock = writeLock.acquire()) {
-            long position = writtenOffset;
+            position = writtenOffset;
             data.writeTo(channel);
             writtenOffset = writtenOffset + data.length();
             operationCounter = operationCounter + 1;
-            return new Translog.Location(id, position, data.length());
         }
+        return new Translog.Location(id, position, data.length());
     }
 
     /**
