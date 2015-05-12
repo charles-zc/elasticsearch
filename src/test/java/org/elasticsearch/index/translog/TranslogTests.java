@@ -19,15 +19,19 @@
 
 package org.elasticsearch.index.translog;
 
-import com.carrotsearch.randomizedtesting.annotations.Repeat;
 import com.carrotsearch.randomizedtesting.generators.RandomPicks;
+import com.github.mustachejava.Code;
 import org.apache.lucene.codecs.CodecUtil;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.lucene.store.ByteArrayDataOutput;
+import org.apache.lucene.util.CollectionUtil;
 import org.apache.lucene.util.IOUtils;
 import org.apache.lucene.util.LuceneTestCase;
+import org.apache.lucene.util.TestUtil;
 import org.elasticsearch.ElasticsearchException;
+import org.elasticsearch.Version;
+import org.elasticsearch.bwcompat.OldIndexBackwardsCompatibilityTests;
 import org.elasticsearch.common.bytes.BytesArray;
 import org.elasticsearch.common.io.FileSystemUtils;
 import org.elasticsearch.common.io.stream.BytesStreamOutput;
@@ -35,12 +39,13 @@ import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.settings.ImmutableSettings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.util.BigArrays;
+import org.elasticsearch.common.util.MultiDataPathUpgrader;
 import org.elasticsearch.common.util.concurrent.AbstractRunnable;
 import org.elasticsearch.common.util.concurrent.ConcurrentCollections;
+import org.elasticsearch.env.NodeEnvironment;
 import org.elasticsearch.index.Index;
 import org.elasticsearch.index.VersionType;
 import org.elasticsearch.index.shard.ShardId;
-import org.elasticsearch.snapshots.Snapshot;
 import org.elasticsearch.test.ElasticsearchTestCase;
 import org.hamcrest.Matchers;
 import org.junit.After;
@@ -49,9 +54,11 @@ import org.junit.Test;
 
 import java.io.EOFException;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.charset.Charset;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -1098,6 +1105,92 @@ public class TranslogTests extends ElasticsearchTestCase {
                 assertEquals(Integer.parseInt(next.getSource().source.toUtf8()), i);
             }
             assertNull(snapshot.next());
+        }
+    }
+
+    public void testUpgradeOldTranslogFiles() throws IOException {
+        List<Path> indexes = new ArrayList<>();
+        Path dir = getDataPath("/" + OldIndexBackwardsCompatibilityTests.class.getPackage().getName().replace('.', '/')); // the files are in the same pkg as the OldIndexBackwardsCompatibilityTests test
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir, "index-*.zip")) {
+            for (Path path : stream) {
+                indexes.add(path);
+            }
+        }
+        TranslogConfig config = this.translog.getConfig();
+        Translog.TranslogGeneration gen = translog.getGeneration();
+        this.translog.close();
+        try {
+            Translog.upgradeLegacyTranslog(logger, translog.getConfig());
+            fail("no generation set");
+        } catch (IllegalArgumentException ex) {
+
+        }
+        translog.getConfig().setTranslogGeneration(gen);
+        try {
+            Translog.upgradeLegacyTranslog(logger, translog.getConfig());
+            fail("already upgraded generation set");
+        } catch (IllegalArgumentException ex) {
+
+        }
+
+        for (Path indexFile : indexes) {
+            final String indexName = indexFile.getFileName().toString().replace(".zip", "").toLowerCase(Locale.ROOT);
+            Version version = Version.fromString(indexName.replace("index-", ""));
+            if (version.onOrAfter(Version.V_2_0_0)) {
+                continue;
+            }
+            Path unzipDir = createTempDir();
+            Path unzipDataDir = unzipDir.resolve("data");
+            // decompress the index
+            try (InputStream stream = Files.newInputStream(indexFile)) {
+                TestUtil.unzip(stream, unzipDir);
+            }
+            // check it is unique
+            assertTrue(Files.exists(unzipDataDir));
+            Path[] list = FileSystemUtils.files(unzipDataDir);
+            if (list.length != 1) {
+                throw new IllegalStateException("Backwards index must contain exactly one cluster but was " + list.length);
+            }
+            // the bwc scripts packs the indices under this path
+            Path src = list[0].resolve("nodes/0/indices/" + indexName);
+            Path translog = list[0].resolve("nodes/0/indices/" + indexName).resolve("0").resolve("translog");
+
+            assertTrue("[" + indexFile + "] missing index dir: " + src.toString(), Files.exists(src));
+            assertTrue("[" + indexFile + "] missing translog dir: " + translog.toString(), Files.exists(translog));
+            Path[] tlogFiles =  FileSystemUtils.files(translog);
+            assertEquals(tlogFiles.length, 1);
+            final long size = Files.size(tlogFiles[0]);
+
+            final long generation = Translog.parseIdFromFileName(tlogFiles[0]);
+            assertTrue(generation >= 1);
+            logger.debug("upgrading index {} file: {} size: {}", indexName, tlogFiles[0].getFileName(), size);
+            TranslogConfig upgradeConfig = new TranslogConfig(config.getShardId(), translog, config.getIndexSettings(), config.getDurabilty(), config.getBigArrays(), config.getThreadPool());
+            upgradeConfig.setTranslogGeneration(new Translog.TranslogGeneration(null, generation));
+            Translog.upgradeLegacyTranslog(logger, upgradeConfig);
+            try (Translog upgraded = new Translog(upgradeConfig)) {
+                assertEquals(generation + 1, upgraded.getGeneration().translogFileGeneration);
+                assertEquals(upgraded.getRecoveredReaders().size(), 1);
+                final long headerSize;
+                if (version.before(Version.V_1_4_0)) {
+                    assertTrue(upgraded.getRecoveredReaders().get(0).getClass().toString(), upgraded.getRecoveredReaders().get(0).getClass() == LegacyTranslogReader.class);
+                   headerSize = 0;
+                } else {
+                    assertTrue(upgraded.getRecoveredReaders().get(0).getClass().toString(), upgraded.getRecoveredReaders().get(0).getClass() == LegacyTranslogReaderBase.class);
+                    headerSize = CodecUtil.headerLength(TranslogWriter.TRANSLOG_CODEC);
+                }
+                List<Translog.Operation> operations = new ArrayList<>();
+                try (Translog.Snapshot snapshot = upgraded.newSnapshot()) {
+                    Translog.Operation op = null;
+                    while ((op = snapshot.next()) != null) {
+                        operations.add(op);
+                    }
+                }
+                if (size > headerSize) {
+                    assertFalse(operations.toString(), operations.isEmpty());
+                } else {
+                    assertTrue(operations.toString(), operations.isEmpty());
+                }
+            }
         }
     }
 }

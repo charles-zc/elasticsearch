@@ -193,11 +193,11 @@ public class InternalEngine extends Engine {
             translog = new Translog(translogConfig);
         } else {
             final Version indexCommittedAt = loadCommittedIndexVersion(writer);
+            translogConfig.setTranslogGeneration(commit);
             if ((indexCommittedAt == null || indexCommittedAt.before(org.elasticsearch.Version.V_2_0_0)) && commit != null) {
                 // only upgrade on pre-2.0 indices... TODO maybe we can do this even eariler?
-                Translog.upgradeLegacyTranslog(logger, translogConfig, commit);
+                Translog.upgradeLegacyTranslog(logger, translogConfig);
             }
-            translogConfig.setTranslogGeneration(commit);
             translog = new Translog(translogConfig);
         }
 

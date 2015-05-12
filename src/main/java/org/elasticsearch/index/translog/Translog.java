@@ -158,13 +158,20 @@ public class Translog extends AbstractIndexShardComponent implements IndexShardC
         }
     }
 
-    public static void upgradeLegacyTranslog(ESLogger logger, TranslogConfig config, TranslogGeneration commit) throws IOException {
+    public static void upgradeLegacyTranslog(ESLogger logger, TranslogConfig config) throws IOException {
         Path translogPath = config.getTranslogPath();
-        assert commit.translogUUID == null : "Already upgrade";
+        TranslogGeneration translogGeneration = config.getTranslogGeneration();
+        if (translogGeneration == null) {
+            throw new IllegalArgumentException("TranslogGeneration must be set in order to upgrade");
+        }
+        if (translogGeneration.translogUUID != null) {
+            throw new IllegalArgumentException("TranslogGeneration has a non-null UUID - index must have already been upgraded");
+        }
+        assert translogGeneration.translogUUID == null : "Already upgrade";
         try {
             assert Checkpoint.read(translogPath.resolve(CHECKPOINT_FILE_NAME)) == null;
         } catch (NoSuchFileException | FileNotFoundException ex) {
-            logger.warn("Recovering translog but no checkpoint found");
+            logger.debug("upgrading translog - no checkpoint found");
         }
 
         try (DirectoryStream<Path> stream = Files.newDirectoryStream(translogPath, new DirectoryStream.Filter<Path>() {
@@ -179,20 +186,20 @@ public class Translog extends AbstractIndexShardComponent implements IndexShardC
                 Matcher matcher = PARSE_ID_PATTERN.matcher(path.getFileName().toString());
                 if (matcher.matches()) {
                     long generation = Long.parseLong(matcher.group(1));
-                    if (generation >= commit.translogFileGeneration) {
-                        latestGeneration = Math.max(commit.translogFileGeneration, generation);
+                    if (generation >= translogGeneration.translogFileGeneration) {
+                        latestGeneration = Math.max(translogGeneration.translogFileGeneration, generation);
                     }
                     final Path target = path.resolveSibling(getFilename(generation));
-                    logger.info("upgrading translog copy file from {} to {}", path, target);
+                    logger.debug("upgrading translog copy file from {} to {}", path, target);
                     Files.move(path, target, StandardCopyOption.ATOMIC_MOVE);
-                    logger.info("write commit point for {}", target);
+                    logger.debug("write commit point for {}", target);
                     Checkpoint checkpoint = new Checkpoint(Files.size(target), -1, generation);
                     Checkpoint.write(translogPath.resolve(getCommitFileName(generation)), checkpoint, StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW);
                 }
             }
 
-            if (latestGeneration < commit.translogFileGeneration) {
-                throw new IllegalStateException("latest found translog has a lower generation that the excepcted uncommitted " + commit.translogFileGeneration + " > " + latestGeneration);
+            if (latestGeneration < translogGeneration.translogFileGeneration) {
+                throw new IllegalStateException("latest found translog has a lower generation that the excepcted uncommitted " + translogGeneration.translogFileGeneration + " > " + latestGeneration);
             }
 
             Checkpoint checkpoint = new Checkpoint(Files.size(translogPath.resolve(getFilename(latestGeneration))), -1, latestGeneration);
@@ -1673,5 +1680,9 @@ public class Translog extends AbstractIndexShardComponent implements IndexShardC
 
     long getFirstOperationPosition() { // for testing
         return current.getFirstOperationOffset();
+    }
+
+    List<ImmutableTranslogReader> getRecoveredReaders() { // for testing
+        return this.recoveredTranslogs;
     }
 }
