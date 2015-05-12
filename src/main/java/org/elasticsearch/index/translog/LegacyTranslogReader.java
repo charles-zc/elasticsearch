@@ -37,7 +37,7 @@ public final class LegacyTranslogReader extends LegacyTranslogReaderBase {
      * @param channelReference
      */
     LegacyTranslogReader(long id, ChannelReference channelReference, long fileLength) {
-        super(id, channelReference, fileLength);
+        super(id, channelReference, 0, fileLength);
     }
 
     @Override
@@ -53,14 +53,11 @@ public final class LegacyTranslogReader extends LegacyTranslogReaderBase {
     }
 
 
-    @Override
-    public int headerLength() {
-        return 0;
-    }
 
     @Override
-    protected ImmutableTranslogReader newReader(long id, ChannelReference channelReference, long length, int totalOperations) {
+    protected ImmutableTranslogReader newReader(long id, ChannelReference channelReference, long firstOperationOffset, long length, int totalOperations) {
         assert totalOperations == -1 : "expected unknown but was: " + totalOperations;
+        assert firstOperationOffset == 0;
         return new LegacyTranslogReader(id, channelReference, length);
     }
 }

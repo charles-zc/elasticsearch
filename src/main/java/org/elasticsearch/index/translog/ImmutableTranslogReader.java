@@ -37,8 +37,8 @@ public class ImmutableTranslogReader extends TranslogReader {
      * Create a snapshot of translog file channel. The length parameter should be consistent with totalOperations and point
      * at the end of the last operation in this snapshot.
      */
-    public ImmutableTranslogReader(long id, ChannelReference channelReference, long length, int totalOperations) {
-        super(id, channelReference);
+    public ImmutableTranslogReader(long id, ChannelReference channelReference, long offset, long length, int totalOperations) {
+        super(id, channelReference, offset);
         this.length = length;
         this.totalOperations = totalOperations;
     }
@@ -47,7 +47,7 @@ public class ImmutableTranslogReader extends TranslogReader {
     public final TranslogReader clone() {
         if (channelReference.tryIncRef()) {
             try {
-                ImmutableTranslogReader reader = newReader(id, channelReference, length, totalOperations);
+                ImmutableTranslogReader reader = newReader(id, channelReference, firstOperationOffset, length, totalOperations);
                 channelReference.incRef(); // for the new object
                 return reader;
             } finally {
@@ -59,8 +59,8 @@ public class ImmutableTranslogReader extends TranslogReader {
     }
 
 
-    protected ImmutableTranslogReader newReader(long id, ChannelReference channelReference, long length, int totalOperations) {
-        return new ImmutableTranslogReader(id, channelReference, length, totalOperations);
+    protected ImmutableTranslogReader newReader(long id, ChannelReference channelReference, long offset, long length, int totalOperations) {
+        return new ImmutableTranslogReader(id, channelReference, offset, length, totalOperations);
     }
 
     public long sizeInBytes() {
@@ -78,8 +78,8 @@ public class ImmutableTranslogReader extends TranslogReader {
         if (position >= length) {
             throw new EOFException("read requested past EOF. pos [" + position + "] end: [" + length + "]");
         }
-        if (position < headerLength()) {
-            throw new IOException("read requested before position of first ops. pos [" + position + "] first op on: [" + headerLength() + "]");
+        if (position < firstOperationOffset) {
+            throw new IOException("read requested before position of first ops. pos [" + position + "] first op on: [" + firstOperationOffset + "]");
         }
         Channels.readFromFileChannelWithEofException(channel, position, buffer);
     }

@@ -33,8 +33,8 @@ class LegacyTranslogReaderBase extends ImmutableTranslogReader {
      * at the end of the last operation in this snapshot.
      *
      */
-    LegacyTranslogReaderBase(long id, ChannelReference channelReference, long fileLength) {
-        super(id, channelReference, fileLength, TranslogReader.UNKNOWN_OP_COUNT);
+    LegacyTranslogReaderBase(long id, ChannelReference channelReference, long firstOperationOffset, long fileLength) {
+        super(id, channelReference, firstOperationOffset, fileLength, TranslogReader.UNKNOWN_OP_COUNT);
     }
 
 
@@ -53,8 +53,8 @@ class LegacyTranslogReaderBase extends ImmutableTranslogReader {
     }
 
     @Override
-    protected ImmutableTranslogReader newReader(long id, ChannelReference channelReference, long length, int totalOperations)  {
+    protected ImmutableTranslogReader newReader(long id, ChannelReference channelReference, long firstOperationOffset, long length, int totalOperations)  {
         assert totalOperations == -1 : "expected unknown but was: " + totalOperations;
-        return new LegacyTranslogReaderBase(id, channelReference, length);
+        return new LegacyTranslogReaderBase(id, channelReference, firstOperationOffset, length);
     }
 }

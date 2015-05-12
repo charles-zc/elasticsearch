@@ -25,7 +25,10 @@ import org.apache.lucene.index.IndexFormatTooNewException;
 import org.apache.lucene.index.IndexFormatTooOldException;
 import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.lucene.store.InputStreamDataInput;
+import org.apache.lucene.util.BytesRef;
+import org.apache.lucene.util.RamUsageEstimator;
 import org.elasticsearch.ElasticsearchException;
+import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.io.stream.ByteBufferStreamInput;
 import org.elasticsearch.common.io.stream.InputStreamStreamInput;
 
@@ -45,17 +48,18 @@ public abstract class TranslogReader implements Closeable, Comparable<TranslogRe
     public static final int UNKNOWN_OP_COUNT = -1;
     private static final byte LUCENE_CODEC_HEADER_BYTE = 0x3f;
     private static final byte UNVERSIONED_TRANSLOG_HEADER_BYTE = 0x00;
-    private static final int HEADER_LENGTH = CodecUtil.headerLength(TranslogWriter.TRANSLOG_CODEC);
 
     protected final long id;
     protected final ChannelReference channelReference;
     protected final FileChannel channel;
     protected final AtomicBoolean closed = new AtomicBoolean(false);
+    protected final long firstOperationOffset;
 
-    public TranslogReader(long id, ChannelReference channelReference) {
+    public TranslogReader(long id, ChannelReference channelReference, long firstOperationOffset) {
         this.id = id;
         this.channelReference = channelReference;
         this.channel = channelReference.getChannel();
+        this.firstOperationOffset = firstOperationOffset;
     }
 
     public long translogId() {
@@ -64,12 +68,11 @@ public abstract class TranslogReader implements Closeable, Comparable<TranslogRe
 
     public abstract long sizeInBytes();
 
-    /** the position the first operation is written at */
-    int headerLength() {
-        return HEADER_LENGTH;
-    }
-
     abstract public int totalOperations();
+
+    public final long getFirstOperationOffset() {
+        return firstOperationOffset;
+    }
 
     public Translog.Operation read(Translog.Location location) throws IOException {
         assert location.translogId == id : "read location's translog id [" + location.translogId + "] is not [" + id + "]";
@@ -172,7 +175,7 @@ public abstract class TranslogReader implements Closeable, Comparable<TranslogRe
      *
      * @throws IOException
      */
-    public static ImmutableTranslogReader open(ChannelReference channelReference, Checkpoint checkpoint) throws IOException {
+    public static ImmutableTranslogReader open(ChannelReference channelReference, Checkpoint checkpoint, String translogUUID) throws IOException {
         final FileChannel channel = channelReference.getChannel();
         final Path path = channelReference.getPath();
         assert channelReference.getTranslogId() == checkpoint.translogId : "expected id: " + channelReference.getTranslogId() + " but got: " + checkpoint.translogId;
@@ -219,12 +222,22 @@ public abstract class TranslogReader implements Closeable, Comparable<TranslogRe
                         assert checkpoint.numOps == TranslogReader.UNKNOWN_OP_COUNT : "expected unknown op count but got: " + checkpoint.numOps;
                         assert checkpoint.offset == Files.size(path) : "offset(" + checkpoint.offset + ") != file_size(" + Files.size(path) + ") for: " + path;
                         // legacy - we still have to support it somehow
-                        return new LegacyTranslogReaderBase(channelReference.getTranslogId(), channelReference, checkpoint.offset);
+                        return new LegacyTranslogReaderBase(channelReference.getTranslogId(), channelReference, CodecUtil.headerLength(TranslogWriter.TRANSLOG_CODEC), checkpoint.offset);
                     case TranslogWriter.VERSION_CHECKPOINTS:
                         assert path.getFileName().toString().endsWith(Translog.TRANSLOG_FILE_SUFFIX) : "new file ends with old suffix: " + path;
                         assert checkpoint.numOps > TranslogReader.UNKNOWN_OP_COUNT: "expected at least 0 operatin but got: " + checkpoint.numOps;
-                        assert checkpoint.offset <= channel.size() : "checkpoint is inconsistent with channel length:" + channel.size() + " " + checkpoint;
-                        return new ImmutableTranslogReader(channelReference.getTranslogId(), channelReference, checkpoint.offset, checkpoint.numOps);
+                        assert checkpoint.offset <= channel.size() : "checkpoint is inconsistent with channel length: " + channel.size() + " " + checkpoint;
+                        int len = headerStream.readInt();
+                        if (len > channel.size()) {
+                            throw new TranslogCorruptedException("uuid length can't be larger than the translog");
+                        }
+                        BytesRef ref = new BytesRef(len);
+                        ref.length = len;
+                        headerStream.read(ref.bytes, ref.offset, ref.length);
+                        if (ref.utf8ToString().equals(translogUUID) == false) {
+                            throw new IllegalStateException("expected shard UUID [" + translogUUID + "] but got: [" + ref.utf8ToString() + "] this translog file belongs to a different translog");
+                        }
+                        return new ImmutableTranslogReader(channelReference.getTranslogId(), channelReference, ref.length + CodecUtil.headerLength(TranslogWriter.TRANSLOG_CODEC) + RamUsageEstimator.NUM_BYTES_INT, checkpoint.offset, checkpoint.numOps);
                     default:
                         throw new TranslogCorruptedException("No known translog stream version: " + version + " path:" + path);
                 }
@@ -260,7 +273,7 @@ public abstract class TranslogReader implements Closeable, Comparable<TranslogRe
             this.totalOperations = totalOperations;
             this.reusableBuffer = reusableBuffer;
             closed = new AtomicBoolean(false);
-            position = headerLength();
+            position = firstOperationOffset;
             readOperations = 0;
             reuse = null;
         }

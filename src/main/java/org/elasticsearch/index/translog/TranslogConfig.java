@@ -20,13 +20,14 @@
 package org.elasticsearch.index.translog;
 
 import org.elasticsearch.common.Nullable;
-import org.elasticsearch.common.logging.ESLogger;
+import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.util.BigArrays;
 import org.elasticsearch.index.settings.IndexSettings;
 import org.elasticsearch.index.shard.ShardId;
+import org.elasticsearch.index.translog.Translog.TranslogCommit;
 import org.elasticsearch.threadpool.ThreadPool;
 
 import java.nio.file.Path;
@@ -52,6 +53,7 @@ public class TranslogConfig {
     private final ShardId shardId;
     private final Path translogPath;
 
+    private volatile TranslogCommit translogCommit;
 
     public TranslogConfig(ShardId shardId, Path translogPath, @IndexSettings Settings indexSettings, Translog.Durabilty durabilty, BigArrays bigArrays, @Nullable ThreadPool threadPool) {
         this.indexSettings = indexSettings;
@@ -134,4 +136,11 @@ public class TranslogConfig {
         return translogPath;
     }
 
+    public TranslogCommit getTranslogCommit() {
+        return translogCommit;
+    }
+
+    public void setTranslogCommit(TranslogCommit translogCommit) {
+        this.translogCommit = translogCommit;
+    }
 }

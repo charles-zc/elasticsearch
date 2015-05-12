@@ -20,6 +20,7 @@
 package org.elasticsearch.index.translog;
 
 import com.carrotsearch.randomizedtesting.generators.RandomPicks;
+import org.apache.lucene.codecs.CodecUtil;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.lucene.store.ByteArrayDataOutput;
@@ -237,10 +238,12 @@ public class TranslogTests extends ElasticsearchTestCase {
 
     @Test
     public void testStats() throws IOException {
+        final long firstOperationPosition = translog.getFirstOperationPosition();
         TranslogStats stats = stats();
         assertThat(stats.estimatedNumberOfOperations(), equalTo(0l));
         long lastSize = stats.translogSizeInBytes().bytes();
-        assertThat(lastSize, equalTo(17l));
+        assertThat((int) firstOperationPosition, greaterThan(CodecUtil.headerLength(TranslogWriter.TRANSLOG_CODEC)));
+        assertThat(lastSize, equalTo(firstOperationPosition));
 
         translog.add(new Translog.Create("test", "1", new byte[]{1}));
         stats = stats();
@@ -269,7 +272,7 @@ public class TranslogTests extends ElasticsearchTestCase {
         translog.commit();
         stats = stats();
         assertThat(stats.estimatedNumberOfOperations(), equalTo(0l));
-        assertThat(stats.translogSizeInBytes().bytes(), equalTo(17l));
+        assertThat(stats.translogSizeInBytes().bytes(), equalTo(firstOperationPosition));
     }
 
     @Test
@@ -890,7 +893,7 @@ public class TranslogTests extends ElasticsearchTestCase {
         final TranslogReader reader = randomBoolean() ? writer : translog.openReader(writer.path(), Checkpoint.read(translog.location().resolve(Translog.CHECKPOINT_FILE_NAME)));
         for (int i = 0; i < numOps; i++) {
             ByteBuffer buffer = ByteBuffer.allocate(4);
-            reader.readBytes(buffer, reader.headerLength() + 4*i);
+            reader.readBytes(buffer, reader.getFirstOperationOffset() + 4*i);
             buffer.flip();
             final int value = buffer.getInt();
             assertEquals(i, value);
@@ -903,7 +906,7 @@ public class TranslogTests extends ElasticsearchTestCase {
         if (reader instanceof ImmutableTranslogReader) {
             ByteBuffer buffer = ByteBuffer.allocate(4);
             try {
-                reader.readBytes(buffer, reader.headerLength() + 4 * numOps);
+                reader.readBytes(buffer, reader.getFirstOperationOffset() + 4 * numOps);
                 fail("read past EOF?");
             } catch (EOFException ex) {
                 // expected
@@ -911,7 +914,7 @@ public class TranslogTests extends ElasticsearchTestCase {
         } else {
             // live reader!
             ByteBuffer buffer = ByteBuffer.allocate(4);
-            final long pos = reader.headerLength() + 4 * numOps;
+            final long pos = reader.getFirstOperationOffset() + 4 * numOps;
             reader.readBytes(buffer, pos);
             buffer.flip();
             final int value = buffer.getInt();
@@ -923,7 +926,7 @@ public class TranslogTests extends ElasticsearchTestCase {
     public void testBasicRecovery() throws IOException {
         List<Translog.Location> locations = newArrayList();
         int translogOperations = randomIntBetween(10, 100);
-        Long lastCommittedTranslogId = null;
+        Translog.TranslogCommit translogCommit = null;
         int minUncommittedOp = -1;
         final boolean commitOften = randomBoolean();
         for (int op = 0; op < translogOperations; op++) {
@@ -932,15 +935,16 @@ public class TranslogTests extends ElasticsearchTestCase {
             if (commit && op < translogOperations-1) {
                 translog.commit();
                 minUncommittedOp = op+1;
-                lastCommittedTranslogId = translog.currentId();
+                translogCommit = translog.getTranslogCommit();
             }
         }
         translog.sync();
         TranslogConfig config = translog.getConfig();
 
         translog.close();
-        translog = new Translog(config, lastCommittedTranslogId);
-        if (lastCommittedTranslogId == null) {
+        config.setTranslogCommit(translogCommit);
+        translog = new Translog(config);
+        if (translogCommit == null) {
             assertEquals(0, translog.stats().estimatedNumberOfOperations());
             assertEquals(1, translog.currentId());
             assertFalse(translog.syncNeeded());
@@ -948,7 +952,7 @@ public class TranslogTests extends ElasticsearchTestCase {
                 assertNull(snapshot.next());
             }
         } else {
-            assertEquals("lastCommitted must be 1 less than current", lastCommittedTranslogId + 1, translog.currentId());
+            assertEquals("lastCommitted must be 1 less than current", translogCommit.translogId + 1, translog.currentId());
             assertFalse(translog.syncNeeded());
             try (Translog.Snapshot snapshot = translog.newSnapshot()) {
                 for (int i = minUncommittedOp; i < translogOperations; i++) {
@@ -965,12 +969,15 @@ public class TranslogTests extends ElasticsearchTestCase {
         List<Translog.Location> locations = newArrayList();
         int translogOperations = randomIntBetween(10, 100);
         final int prepareOp = randomIntBetween(0, translogOperations-1);
-        final Long lastCommittedTranslogId = 1l; // we know it's the first one
+        Translog.TranslogCommit translogCommit = null;
         final boolean sync = randomBoolean();
         for (int op = 0; op < translogOperations; op++) {
             locations.add(translog.add(new Translog.Create("test", "" + op, Integer.toString(op).getBytes(Charset.forName("UTF-8")))));
             if (op == prepareOp) {
+                translogCommit = translog.getTranslogCommit();
                 translog.prepareCommit();
+                assertEquals("expected this to be the first commit", 1l, translogCommit.translogId);
+                assertNotNull(translogCommit.translogUUID);
             }
         }
         if (sync) {
@@ -979,9 +986,10 @@ public class TranslogTests extends ElasticsearchTestCase {
         // we intentionally don't close the tlog that is in the prepareCommit stage since we try to recovery the uncommitted
         // translog here as well.
         TranslogConfig config = translog.getConfig();
-        try (Translog translog = new Translog(config, lastCommittedTranslogId)) {
-            assertNotNull(lastCommittedTranslogId);
-            assertEquals("lastCommitted must be 2 less than current - we never finished the commit", lastCommittedTranslogId + 2, translog.currentId());
+        config.setTranslogCommit(translogCommit);
+        try (Translog translog = new Translog(config)) {
+            assertNotNull(translogCommit);
+            assertEquals("lastCommitted must be 2 less than current - we never finished the commit", translogCommit.translogId + 2, translog.currentId());
             assertFalse(translog.syncNeeded());
             try (Translog.Snapshot snapshot = translog.newSnapshot()) {
                 int upTo = sync ? translogOperations : prepareOp;
@@ -993,9 +1001,9 @@ public class TranslogTests extends ElasticsearchTestCase {
             }
         }
         if (randomBoolean()) { // recover twice
-            try (Translog translog = new Translog(config, lastCommittedTranslogId)) {
-                assertNotNull(lastCommittedTranslogId);
-                assertEquals("lastCommitted must be 3 less than current - we never finished the commit and run recovery twice", lastCommittedTranslogId + 3, translog.currentId());
+            try (Translog translog = new Translog(config)) {
+                assertNotNull(translogCommit);
+                assertEquals("lastCommitted must be 3 less than current - we never finished the commit and run recovery twice", translogCommit.translogId + 3, translog.currentId());
                 assertFalse(translog.syncNeeded());
                 try (Translog.Snapshot snapshot = translog.newSnapshot()) {
                     int upTo = sync ? translogOperations : prepareOp;

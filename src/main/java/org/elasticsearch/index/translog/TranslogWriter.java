@@ -20,8 +20,11 @@
 package org.elasticsearch.index.translog;
 
 import org.apache.lucene.codecs.CodecUtil;
+import org.apache.lucene.store.ByteArrayDataOutput;
 import org.apache.lucene.store.OutputStreamDataOutput;
+import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.IOUtils;
+import org.apache.lucene.util.RamUsageEstimator;
 import org.elasticsearch.common.bytes.BytesArray;
 import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.io.Channels;
@@ -54,19 +57,19 @@ public class TranslogWriter extends TranslogReader {
     protected volatile long writtenOffset;
 
     public TranslogWriter(ShardId shardId, long id, ChannelReference channelReference) throws IOException {
-        super(id, channelReference);
+        super(id, channelReference, channelReference.getChannel().position());
         this.shardId = shardId;
         ReadWriteLock rwl = new ReentrantReadWriteLock();
         readLock = new ReleasableLock(rwl.readLock());
         writeLock = new ReleasableLock(rwl.writeLock());
-        final int headerLength = CodecUtil.headerLength(TRANSLOG_CODEC);
-        this.writtenOffset = headerLength;
-        this.lastSyncedOffset = headerLength;
+        this.writtenOffset = channelReference.getChannel().position();
+        this.lastSyncedOffset = channelReference.getChannel().position();;
     }
 
-    public static TranslogWriter create(Type type, ShardId shardId, long id, Path file, Callback<ChannelReference> onClose, int bufferSize) throws IOException {
+    public static TranslogWriter create(Type type, ShardId shardId, String translogUUID, long fileGeneration, Path file, Callback<ChannelReference> onClose, int bufferSize) throws IOException {
         Path pendingFile = file.resolveSibling("pending_" + file.getFileName());
-        final int headerLength = CodecUtil.headerLength(TRANSLOG_CODEC);
+        final BytesRef ref = new BytesRef(translogUUID);
+        final int headerLength = CodecUtil.headerLength(TRANSLOG_CODEC) + ref.length + RamUsageEstimator.NUM_BYTES_INT;
         /**
          * We first create pending_translog, write the header, fsync it and write a checkpoint. Then we rename the pending file into
          * the actual file such that there is never a file without valid header. If the header is missing it's corrupted
@@ -76,14 +79,16 @@ public class TranslogWriter extends TranslogReader {
             // closing it will close the FileChannel
             OutputStreamDataOutput out = new OutputStreamDataOutput(java.nio.channels.Channels.newOutputStream(channel));
             CodecUtil.writeHeader(out, TRANSLOG_CODEC, VERSION);
+            out.writeInt(ref.length);
+            out.writeBytes(ref.bytes, ref.offset, ref.length);
             channel.force(false);
-            writeCheckpoint(headerLength, 0, file.getParent(), id, StandardOpenOption.WRITE);
+            writeCheckpoint(headerLength, 0, file.getParent(), fileGeneration, StandardOpenOption.WRITE);
         }
         Files.move(pendingFile, file, StandardCopyOption.ATOMIC_MOVE);
         FileChannel channel = FileChannel.open(file, StandardOpenOption.READ, StandardOpenOption.WRITE);
         try {
             channel.position(headerLength);
-            final TranslogWriter writer = type.create(shardId, id, new ChannelReference(file, id, channel, onClose), bufferSize);
+            final TranslogWriter writer = type.create(shardId, fileGeneration, new ChannelReference(file, fileGeneration, channel, onClose), bufferSize);
             return writer;
         } catch (Throwable throwable){
             IOUtils.closeWhileHandlingException(channel);
@@ -191,7 +196,7 @@ public class TranslogWriter extends TranslogReader {
         channelReference.incRef();
         boolean success = false;
         try {
-            TranslogReader reader = new InnerReader(this.id, channelReference);
+            TranslogReader reader = new InnerReader(this.id, firstOperationOffset, channelReference);
             success = true;
             return reader;
         } finally {
@@ -210,7 +215,7 @@ public class TranslogWriter extends TranslogReader {
         if (channelReference.tryIncRef()) {
             try (ReleasableLock lock = writeLock.acquire()) {
                 flush();
-                ImmutableTranslogReader reader = new ImmutableTranslogReader(this.id, channelReference, writtenOffset, operationCounter);
+                ImmutableTranslogReader reader = new ImmutableTranslogReader(this.id, channelReference, firstOperationOffset, writtenOffset, operationCounter);
                 channelReference.incRef(); // for new reader
                 return reader;
             } catch (Exception e) {
@@ -235,8 +240,8 @@ public class TranslogWriter extends TranslogReader {
      */
     final class InnerReader extends TranslogReader {
 
-        public InnerReader(long id, ChannelReference channelReference) {
-            super(id, channelReference);
+        public InnerReader(long id, long fistOperationOffset, ChannelReference channelReference) {
+            super(id, channelReference, fistOperationOffset);
         }
 
         @Override
