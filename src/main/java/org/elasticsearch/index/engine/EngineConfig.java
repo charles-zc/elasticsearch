@@ -29,7 +29,6 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.ByteSizeUnit;
 import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.common.unit.TimeValue;
-import org.elasticsearch.common.util.BigArrays;
 import org.elasticsearch.common.util.concurrent.EsExecutors;
 import org.elasticsearch.index.codec.CodecService;
 import org.elasticsearch.index.deletionpolicy.SnapshotDeletionPolicy;
@@ -44,7 +43,6 @@ import org.elasticsearch.index.translog.TranslogConfig;
 import org.elasticsearch.indices.IndicesWarmer;
 import org.elasticsearch.threadpool.ThreadPool;
 
-import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
 
 /*
@@ -77,7 +75,7 @@ public final class EngineConfig {
     private final Similarity similarity;
     private final CodecService codecService;
     private final Engine.FailedEngineListener failedEngineListener;
-    private final boolean ignoreUnknownTranslog;
+    private final boolean forceNewTranslog;
     private final QueryCache filterCache;
     private final QueryCachingPolicy filterCachingPolicy;
 
@@ -125,7 +123,7 @@ public final class EngineConfig {
 
 
     /** if set to true the engine will start even if the translog id in the commit point can not be found */
-    public static final String INDEX_IGNORE_UNKNOWN_TRANSLOG = "index.engine.ignore_unknown_translog";
+    public static final String INDEX_FORCE_NEW_TRANSLOG = "index.engine.force_new_translog";
 
 
     public static final TimeValue DEFAULT_REFRESH_INTERVAL = new TimeValue(1, TimeUnit.SECONDS);
@@ -170,7 +168,7 @@ public final class EngineConfig {
         versionMapSizeSetting = indexSettings.get(INDEX_VERSION_MAP_SIZE, DEFAULT_VERSION_MAP_SIZE);
         updateVersionMapSize();
         this.translogRecoveryPerformer = translogRecoveryPerformer;
-        this.ignoreUnknownTranslog = indexSettings.getAsBoolean(INDEX_IGNORE_UNKNOWN_TRANSLOG, false);
+        this.forceNewTranslog = indexSettings.getAsBoolean(INDEX_FORCE_NEW_TRANSLOG, false);
         this.filterCache = filterCache;
         this.filterCachingPolicy = filterCachingPolicy;
         this.translogConfig = translogConfig;
@@ -202,8 +200,8 @@ public final class EngineConfig {
     }
 
     /** if true the engine will start even if the translog id in the commit point can not be found */
-    public boolean getIgnoreUnknownTranslog() {
-        return ignoreUnknownTranslog;
+    public boolean forceNewTranlog() {
+        return forceNewTranslog;
     }
 
     /**

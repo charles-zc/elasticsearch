@@ -146,8 +146,7 @@ public class InternalEngine extends Engine {
             try {
                 writer = createWriter();
                 indexWriter = writer;
-                translog = openTranslog(engineConfig, writer, skipInitialTranslogRecovery
-                        || engineConfig.getIgnoreUnknownTranslog()); // nocommit this is a weird name for this property
+                translog = openTranslog(engineConfig, writer, skipInitialTranslogRecovery || engineConfig.forceNewTranlog());
                 translogGeneration = translog.getGeneration();
                 assert translogGeneration != null;
             } catch (IOException | TranslogCorruptedException e) {
@@ -725,7 +724,7 @@ public class InternalEngine extends Engine {
                         flushNeeded = false;
                         final Translog.TranslogGeneration translogGeneration;
                         try {
-                            // nocommit - use two phase commit tool here
+                            // TODO - use two phase commit tool here?
                             translog.prepareCommit();
                             translogGeneration = translog.getGeneration();
                             logger.trace("starting commit for flush; commitTranslog=true");

@@ -21,6 +21,7 @@ package org.elasticsearch.index.translog;
 
 import org.apache.lucene.index.Term;
 import org.apache.lucene.index.TwoPhaseCommit;
+import org.apache.lucene.store.AlreadyClosedException;
 import org.apache.lucene.util.Accountable;
 import org.apache.lucene.util.IOUtils;
 import org.apache.lucene.util.RamUsageEstimator;
@@ -66,42 +67,8 @@ import java.util.regex.Pattern;
  */
 public class Translog extends AbstractIndexShardComponent implements IndexShardComponent, Closeable, TwoPhaseCommit {
 
-    public static final String TRANSLOG_ID_KEY = "translog_id";
-    public static final String TRANSLOG_UUID_KEY = "translog_uuid";
-    public static final String TRANSLOG_FILE_PREFIX = "translog-";
-    public static final String TRANSLOG_FILE_SUFFIX = ".tlog";
-    public static final String CHECKPOINT_SUFFIX = ".ckp";
-    public static final String CHECKPOINT_FILE_NAME = "translog" + CHECKPOINT_SUFFIX;
-
-    static final Pattern PARSE_ID_PATTERN = Pattern.compile(TRANSLOG_FILE_PREFIX + "(\\d+)((\\.recovering)|(\\.tlog))?$");
-
-    private final List<ImmutableTranslogReader> recoveredTranslogs;
-    private volatile ScheduledFuture<?> syncScheduler;
-
-
-    // this is a concurrent set and is not protected by any of the locks. The main reason
-    // is that is being accessed by two separate classes (additions & reading are done by FsTranslog, remove by FsView when closed)
-    private final Set<FsView> outstandingViews = ConcurrentCollections.newConcurrentSet();
-    private BigArrays bigArrays;
-
-
-    protected final ReleasableLock readLock;
-    protected final ReleasableLock writeLock;
-
-    private final Path location;
-
-    private TranslogWriter current;
-    // ordered by age
-    private volatile ImmutableTranslogReader currentCommittingTranslog;
-    private long lastCommittedTranslogFileGeneration = -1; // -1 is safe as it will not cause an translog deletion.
-
-    private final AtomicBoolean closed = new AtomicBoolean();
-    private final TranslogConfig config;
-    private final String translogUUID;
-
-    /**
-     * //nocommit
-     *  - try to find a better way of signaling if we need to create a new translog
+    /*
+     * nocommit
      *  - we might need something like a deletion policy to hold on to more than one translog eventually (I think sequence IDs needs this) but we can refactor as we go
      *  - use a simple BufferedOuputStream to write stuff and fold BufferedTranslogWriter into it's super class... the tricky bit is we need to be able to do random access reads even from the buffer
      *  - somehow we should move the sync task somewhere else
@@ -109,6 +76,32 @@ public class Translog extends AbstractIndexShardComponent implements IndexShardC
      *  - do we need to page align the last write before we sync?
      *  - add a boat load of documentaion how this works
      */
+    public static final String TRANSLOG_ID_KEY = "translog_id";
+    public static final String TRANSLOG_UUID_KEY = "translog_uuid";
+    public static final String TRANSLOG_FILE_PREFIX = "translog-";
+    public static final String TRANSLOG_FILE_SUFFIX = ".tlog";
+    public static final String CHECKPOINT_SUFFIX = ".ckp";
+    public static final String CHECKPOINT_FILE_NAME = "translog" + CHECKPOINT_SUFFIX;
+
+    static final Pattern PARSE_ID_PATTERN = Pattern.compile("^" + TRANSLOG_FILE_PREFIX + "(\\d+)((\\.recovering)|(\\.tlog))?$");
+
+    private final List<ImmutableTranslogReader> recoveredTranslogs;
+    private volatile ScheduledFuture<?> syncScheduler;
+    // this is a concurrent set and is not protected by any of the locks. The main reason
+    // is that is being accessed by two separate classes (additions & reading are done by FsTranslog, remove by FsView when closed)
+    private final Set<FsView> outstandingViews = ConcurrentCollections.newConcurrentSet();
+    private BigArrays bigArrays;
+    protected final ReleasableLock readLock;
+    protected final ReleasableLock writeLock;
+    private final Path location;
+    private TranslogWriter current;
+    private volatile ImmutableTranslogReader currentCommittingTranslog;
+    private long lastCommittedTranslogFileGeneration = -1; // -1 is safe as it will not cause an translog deletion.
+    private final AtomicBoolean closed = new AtomicBoolean();
+    private final TranslogConfig config;
+    private final String translogUUID;
+
+
     public Translog(TranslogConfig config) throws IOException {
         super(config.getShardId(), config.getIndexSettings());
         this.config = config;
@@ -134,7 +127,7 @@ public class Translog extends AbstractIndexShardComponent implements IndexShardC
                 final Checkpoint checkpoint = Checkpoint.read(location.resolve(CHECKPOINT_FILE_NAME));
                 this.recoveredTranslogs = recoverFromFiles(translogGeneration, checkpoint);
                 if (recoveredTranslogs.isEmpty()) {
-                    throw new IllegalStateException("At least one reader must be recoverd");
+                    throw new IllegalStateException("at least one reader must be recovered");
                 }
                 current = createWriter(checkpoint.generation + 1);
                 this.lastCommittedTranslogFileGeneration = translogGeneration.translogFileGeneration;
@@ -158,6 +151,8 @@ public class Translog extends AbstractIndexShardComponent implements IndexShardC
         }
     }
 
+    /**
+     */
     public static void upgradeLegacyTranslog(ESLogger logger, TranslogConfig config) throws IOException {
         Path translogPath = config.getTranslogPath();
         TranslogGeneration translogGeneration = config.getTranslogGeneration();
@@ -513,7 +508,7 @@ public class Translog extends AbstractIndexShardComponent implements IndexShardC
         }
     }
 
-    private boolean isReferencedGeneration(long generation) {
+    private boolean isReferencedGeneration(long generation) { // pkg private for testing
         return generation >= lastCommittedTranslogFileGeneration;
     }
 
@@ -1584,6 +1579,7 @@ public class Translog extends AbstractIndexShardComponent implements IndexShardC
 
     @Override
     public void prepareCommit() throws IOException {
+        ensureOpen();
         TranslogWriter writer = null;
         try (ReleasableLock lock = writeLock.acquire()) {
             if (currentCommittingTranslog != null) {
@@ -1618,6 +1614,7 @@ public class Translog extends AbstractIndexShardComponent implements IndexShardC
 
     @Override
     public void commit() throws IOException {
+        ensureOpen();
         ImmutableTranslogReader toClose = null;
         try (ReleasableLock lock = writeLock.acquire()) {
             if (currentCommittingTranslog == null) {
@@ -1638,10 +1635,14 @@ public class Translog extends AbstractIndexShardComponent implements IndexShardC
 
     @Override
     public void rollback() throws IOException {
+        ensureOpen();
         close();
     }
 
-    public static class TranslogGeneration {
+    /**
+     * References a transaction log generation
+     */
+    public final static class TranslogGeneration {
         public final String translogUUID;
         public final long translogFileGeneration;
 
@@ -1685,4 +1686,12 @@ public class Translog extends AbstractIndexShardComponent implements IndexShardC
     List<ImmutableTranslogReader> getRecoveredReaders() { // for testing
         return this.recoveredTranslogs;
     }
+
+    private void ensureOpen() {
+        if (closed.get()) {
+            throw new AlreadyClosedException("translog is already closed");
+        }
+    }
+
+
 }

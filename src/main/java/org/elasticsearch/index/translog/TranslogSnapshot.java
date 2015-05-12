@@ -74,7 +74,7 @@ public class TranslogSnapshot implements Translog.Snapshot {
                 op = current.next();
             } catch (TruncatedTranslogException e) {
                 if (estimatedTotalOperations == TranslogReader.UNKNOWN_OP_COUNT) {
-                    // legacy translog file - can have UNKNOWN_OP_COUNT nocommit we need to make sure this only applies to old files
+                    // legacy translog file - can have UNKNOWN_OP_COUNT
                     // file is empty or header has been half-written and should be ignored
                 } else {
                     throw e;

@@ -1563,7 +1563,7 @@ public class InternalEngineTests extends ElasticsearchTestCase {
         }
         // now it should be OK.
         IndexSettingsService indexSettingsService = new IndexSettingsService(shardId.index(), ImmutableSettings.builder().put(defaultSettings)
-                .put(EngineConfig.INDEX_IGNORE_UNKNOWN_TRANSLOG, true).build());
+                .put(EngineConfig.INDEX_FORCE_NEW_TRANSLOG, true).build());
         engine = createEngine(indexSettingsService, store, primaryTranslogDir, createMergeScheduler(indexSettingsService));
     }
 
